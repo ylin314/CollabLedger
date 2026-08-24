@@ -104,3 +104,57 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 - `llm`：调用 OpenAI Chat Completions 兼容协议 `POST /v1/chat/completions`，不是 Responses API。
 
 可通过 `GET /api/agent/config` 查看脱敏后的 URL、模型和配置状态；完整 API Key 永远不会由接口返回。
+
+## 阶段一功能（已补全）
+
+当前版本已经补齐路线图阶段一的真实协作闭环：
+
+- 注册、登录、退出登录与 Bearer 会话
+- 项目数据按登录用户隔离
+- 项目角色：组长、成员、只读成员
+- 项目创建、编辑、删除与多项目切换
+- 成员直接添加、邀请 Token/邀请码、接受邀请、修改角色、移除成员
+- 任务创建、负责人分配、状态流转和操作日志
+- 成员主动工作日志：开始工作、结束工作、日期、投入小时、工作说明
+- 任务完成后的 0–5 分质量评价与质量汇总
+- SQLite 向前兼容迁移、Docker 部署和自动化测试
+
+认证接口：
+
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+- `POST /api/auth/accept-invitation`
+
+阶段一协作接口：
+
+- `POST/GET/PATCH/DELETE /api/projects/{id}/members...`
+- `POST/GET /api/projects/{id}/invitations`
+- `POST/GET/DELETE /api/projects/{id}/work-logs...`
+- `POST/GET /api/projects/{id}/quality-reviews`
+- `GET /api/projects/{id}/quality-summary`
+
+测试命令：
+
+```powershell
+python -m pytest -q backend
+cd frontend
+npm run build
+```
+## 前端路由
+
+前端使用 Hash 路由，兼容 Vite 开发服务器和 Docker 中 FastAPI 的静态托管。工作区页面地址示例：
+
+```text
+#/projects/{project_id}/overview
+#/projects/{project_id}/tasks
+#/projects/{project_id}/contributions
+#/projects/{project_id}/report
+#/projects/{project_id}/agent
+#/projects/{project_id}/members
+#/projects/{project_id}/worklog
+#/projects/new
+```
+
+页面切换会写入浏览器历史，浏览器的后退/前进按钮、刷新和复制链接都能恢复当前页面。
