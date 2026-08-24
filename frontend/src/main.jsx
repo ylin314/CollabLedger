@@ -32,35 +32,77 @@ const statusMeta = {
 const nav = [{ id: 'overview', icon: '⌂', label: '项目总览' }, { id: 'tasks', icon: '✓', label: '任务看板' }, { id: 'contributions', icon: '◈', label: '贡献账本' }, { id: 'report', icon: '▥', label: '贡献报告' }, { id: 'agent', icon: '✦', label: '协作 Agent' }]
 const avatarColors = ['#ffe4bd', '#d7e8ff', '#d9f3e3', '#eddcff', '#ffd9e0']
 
-async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new Error('network'); return r.json() }
-async function sendJson(url, options = {}) { if (window.__collabDemoMode && url.includes('/agent')) throw new Error('demo-mode'); const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options }); if (!r.ok) throw new Error('network'); return r.json() }
+function authHeaders() {
+  const token = localStorage.getItem('collab_token')
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+async function getJson(url) {
+  const r = await fetch(url, { headers: authHeaders() })
+  if (!r.ok) { const error = new Error(`request ${r.status}`); error.status = r.status; throw error }
+  return r.json()
+}
+async function sendJson(url, options = {}) {
+  if (window.__collabDemoMode && url.includes('/agent')) throw new Error('demo-mode')
+  const r = await fetch(url, { headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) }, ...options })
+  if (!r.ok) { const error = new Error(`request ${r.status}`); error.status = r.status; throw error }
+  return r.json()
+}
 function initials(name = '') { return name.slice(0, 1) }
 function formatDate(value) { if (!value) return '未设置'; const d = new Date(value); return `${d.getMonth() + 1}月${d.getDate()}日` }
 
+const routePages = new Set(['overview', 'tasks', 'contributions', 'report', 'agent', 'members', 'worklog', 'new'])
+function readRoute() {
+  const raw = window.location.hash.replace(/^#\/?/, '')
+  const parts = raw.split('/').filter(Boolean)
+  if (parts[0] === 'projects' && parts[1] === 'new') return { projectId: null, page: 'new' }
+  if (parts[0] === 'projects' && parts[1]) {
+    const projectId = Number(parts[1])
+    const page = routePages.has(parts[2]) ? parts[2] : 'overview'
+    return { projectId: Number.isFinite(projectId) ? projectId : null, page }
+  }
+  return { projectId: null, page: 'overview' }
+}
+function routeHash(projectId, page = 'overview') { return projectId ? `#/projects/${projectId}/${page}` : '#/projects/new' }
+
 function App() {
-  const [project, setProject] = useState(demoProject)
+  const [auth, setAuth] = useState(() => { try { return JSON.parse(localStorage.getItem('collab_user') || 'null') } catch { return null } })
+  const [projects, setProjects] = useState([])
+  const [project, setProject] = useState(null)
   const [report, setReport] = useState(null)
-  const [active, setActive] = useState('overview')
-  const [loading, setLoading] = useState(true)
-  const [online, setOnline] = useState(false)
+  const [route, setRoute] = useState(() => readRoute())
+  const [loading, setLoading] = useState(Boolean(auth))
+  const [online, setOnline] = useState(Boolean(auth))
   const [showTask, setShowTask] = useState(false)
   const [recommendTask, setRecommendTask] = useState(null)
+
+
+  const [reviewTask, setReviewTask] = useState(null)
   const [toast, setToast] = useState('')
   const [query, setQuery] = useState('')
 
-  useEffect(() => { loadProject() }, [])
+  const active = route.page
+  useEffect(() => { const onHashChange = () => setRoute(readRoute()); window.addEventListener('hashchange', onHashChange); return () => window.removeEventListener('hashchange', onHashChange) }, [])
+  useEffect(() => { if (auth) loadProject(route.projectId || undefined) }, [auth])
+  useEffect(() => { if (auth && route.projectId && project?.id !== route.projectId) loadProject(route.projectId) }, [auth, route.projectId])
   useEffect(() => { if (toast) { const t = setTimeout(() => setToast(''), 2600); return () => clearTimeout(t) } }, [toast])
 
-  async function loadProject() {
+  async function loadProject(id) {
     setLoading(true)
     try {
-      const projects = await getJson('/api/projects')
-      const id = projects[0]?.id
-      if (!id) { window.__collabDemoMode = false; setProject(null); setReport(null); setOnline(true); return }
-const [detail, rep, contributions] = await Promise.all([getJson(`/api/projects/${id}`), getJson(`/api/projects/${id}/report`), getJson(`/api/projects/${id}/contributions`)]); const names = Object.fromEntries((detail.members || []).map(m => [m.id, m.name])); detail.tasks = (detail.tasks || []).map(t => ({ ...t, assignee_name: names[t.assignee_id] || null })); window.__collabDemoMode = false; setProject({ ...detail, contributions }); setReport(rep); setOnline(true)
-} catch { window.__collabDemoMode = true; setOnline(false); setProject(demoProject); setReport(null) } finally { setLoading(false) }
+      const list = await getJson('/api/projects')
+      setProjects(list)
+      const selectedId = id || Number(localStorage.getItem('collab_project_id')) || list[0]?.id
+      if (!selectedId) { setProject(null); setReport(null); setOnline(true); if (window.location.hash !== '#/projects/new') window.history.replaceState(null, '', routeHash(null, 'new')); setRoute({ projectId: null, page: 'new' }); return }
+      const [detail, rep, contributions] = await Promise.all([getJson(`/api/projects/${selectedId}`), getJson(`/api/projects/${selectedId}/report`), getJson(`/api/projects/${selectedId}/contributions`)]); const names = Object.fromEntries((detail.members || []).map(m => [m.id, m.name])); detail.tasks = (detail.tasks || []).map(t => ({ ...t, assignee_name: names[t.assignee_id] || null })); setProject({ ...detail, contributions }); setReport(rep); setOnline(true); localStorage.setItem('collab_project_id', selectedId); if (route.projectId !== selectedId) { const page = route.page === 'new' ? 'overview' : route.page; window.history.replaceState(null, '', routeHash(selectedId, page)); setRoute({ projectId: selectedId, page }) }
+    } catch (error) {
+      if (error.status === 401) { logout(); return }
+      setOnline(false); setProject(null); setReport(null)
+    } finally { setLoading(false) }
   }
 
+  function logout() { localStorage.removeItem('collab_token'); localStorage.removeItem('collab_user'); localStorage.removeItem('collab_project_id'); setAuth(null); setProject(null); window.history.replaceState(null, '', '#/login'); setRoute({ projectId: null, page: 'overview' }) }
+  function navigate(page, projectId = project?.id, replace = false) { const hash = routeHash(projectId, page); if (replace) { window.history.replaceState(null, '', hash); setRoute({ projectId, page }); return } if (window.location.hash === hash) { setRoute({ projectId, page }); return } window.location.hash = hash }
+  async function afterProject(created) { navigate('overview', created.id); await loadProject(created.id) }
   const tasks = project?.tasks || []
   const members = project?.members || []
   const activeTasks = tasks.filter(t => ['assigned', 'in_progress', 'paused'].includes(t.status))
@@ -69,40 +111,19 @@ const [detail, rep, contributions] = await Promise.all([getJson(`/api/projects/$
   const progress = tasks.length ? Math.round(completed / tasks.length * 100) : 0
   const memberStats = useMemo(() => members.map(m => ({ ...m, current: tasks.filter(t => t.assignee_id === m.id && ['assigned', 'in_progress', 'paused'].includes(t.status)).length, done: tasks.filter(t => t.assignee_id === m.id && t.status === 'completed').length, quality: (() => { const q = tasks.filter(t => t.assignee_id === m.id && t.quality != null).map(t => t.quality); return q.length ? (q.reduce((a, b) => a + b, 0) / q.length).toFixed(1) : '—' })() })), [members, tasks])
 
-  if (!loading && !project) return <CreateProjectView onCreated={async created => { const [detail, rep, contributions] = await Promise.all([getJson(`/api/projects/${created.id}`), getJson(`/api/projects/${created.id}/report`), getJson(`/api/projects/${created.id}/contributions`)]); const names = Object.fromEntries((detail.members || []).map(m => [m.id, m.name])); detail.tasks = (detail.tasks || []).map(t => ({ ...t, assignee_name: names[t.assignee_id] || null })); window.__collabDemoMode = false; setProject({ ...detail, contributions }); setReport(rep); setOnline(true) }} />
+  if (!auth) return <AuthView onAuthenticated={user => setAuth(user)} />
+  if (!loading && (!project || route.page === 'new')) return <CreateProjectView currentUser={auth} onCreated={afterProject} onCancel={project ? () => navigate('overview', project.id, true) : undefined} />
 
   async function taskAction(task, action) {
-    try { const updated = await sendJson(`/api/tasks/${task.id}/${action}`, { method: 'POST' }); setProject(p => ({ ...p, tasks: p.tasks.map(t => t.id === task.id ? { ...t, ...updated } : t) })); setToast(`已将「${task.title}」标记为${statusMeta[updated.status]?.label || '已更新'}`) } catch { const next = { start: 'in_progress', pause: 'paused', resume: 'in_progress', complete: 'completed', overdue: 'overdue', unfinished: 'unfinished' }[action]; setProject(p => ({ ...p, tasks: p.tasks.map(t => t.id === task.id ? { ...t, status: next } : t) })); setToast('演示模式：状态已更新') }
+    try { const updated = await sendJson(`/api/tasks/${task.id}/${action}`, { method: 'POST', body: JSON.stringify({ user_id: auth.id }) }); setProject(p => ({ ...p, tasks: p.tasks.map(t => t.id === task.id ? { ...t, ...updated } : t) })); setToast(`已将「${task.title}」标记为${statusMeta[updated.status]?.label || '已更新'}`); if (action === 'complete') setReviewTask({ ...task, ...updated }) } catch { setToast('操作失败，请检查权限或网络连接') }
   }
-
-  async function createTask(data) {
-    try { const t = await sendJson(`/api/projects/${project.id}/tasks`, { method: 'POST', body: JSON.stringify(data) }); setProject(p => ({ ...p, tasks: [t, ...p.tasks] })); setToast('任务已创建') } catch { const t = { ...data, id: Date.now(), status: data.assignee_id ? 'assigned' : 'unassigned', assignee_name: members.find(m => m.id === Number(data.assignee_id))?.name || null }; setProject(p => ({ ...p, tasks: [t, ...p.tasks] })); setToast('演示模式：任务已创建') }
-    setShowTask(false)
-  }
+  async function createTask(data) { try { const t = await sendJson(`/api/projects/${project.id}/tasks`, { method: 'POST', body: JSON.stringify(data) }); setProject(p => ({ ...p, tasks: [t, ...p.tasks] })); setToast('任务已创建') } catch { setToast('创建任务失败') } setShowTask(false) }
+  async function changeProject(id) { navigate('overview', id); await loadProject(id) }
 
   return <div className="app-shell">
-    <aside className="sidebar">
-      <div className="brand"><div className="brand-mark">▦</div><div><div className="brand-name">协作账本</div><div className="brand-sub">COLLAB LEDGER</div></div></div>
-      <div className="workspace-label">我的工作区</div>
-      <div className="project-switch"><div className="project-dot"/><div><strong>{project.name}</strong><span>{project.project_type || '项目空间'}</span></div><span className="chevron">⌄</span></div>
-      <nav>{nav.map(item => <button key={item.id} className={`nav-item ${active === item.id ? 'selected' : ''}`} onClick={() => setActive(item.id)}><span className="nav-icon">{item.icon}</span>{item.label}{item.id === 'tasks' && overdue > 0 && <span className="nav-badge">{overdue}</span>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="privacy-card"><span className="privacy-icon">◉</span><div><strong>隐私友好设计</strong><p>只记录协作成果，不监控个人设备。</p></div></div><div className="profile-chip"><div className="avatar avatar-me">张</div><div><strong>张三</strong><span>项目负责人</span></div><span className="more">•••</span></div></div>
-    </aside>
-    <main className="main-content">
-      <header className="topbar"><div className="breadcrumb"><span>项目空间</span><b>/</b><strong>{nav.find(n => n.id === active)?.label}</strong></div><div className="top-actions"><div className="search"><span>⌕</span><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索任务、成员…"/></div><button className="icon-button" title="通知">♢<i/></button><button className="help-button">?</button></div></header>
-      <div className="page-wrap">
-        {loading ? <div className="loading-state">正在加载项目空间…</div> : <>
-          {active === 'overview' && <Overview project={project} memberStats={memberStats} tasks={tasks} progress={progress} completed={completed} overdue={overdue} activeTasks={activeTasks} online={online} onNavigate={setActive} onAction={taskAction} onRecommend={setRecommendTask}/>} 
-          {active === 'tasks' && <TasksView tasks={tasks.filter(t => !query || `${t.title}${t.assignee_name || ''}`.includes(query))} members={members} onAction={taskAction} onCreate={() => setShowTask(true)} onRecommend={setRecommendTask}/>} 
-          {active === 'contributions' && <ContributionsView project={project} members={members} online={online} setProject={setProject} onToast={setToast}/>} 
-          {active === 'report' && <ReportView project={project} report={report} memberStats={memberStats} tasks={tasks}/>} 
-          {active === 'agent' && <AgentView project={project} online={online} onRecommend={setRecommendTask}/>} 
-        </>}
-      </div>
-    </main>
-    {showTask && <TaskModal members={members} onClose={() => setShowTask(false)} onSave={createTask}/>} 
-    {recommendTask && <RecommendModal task={recommendTask} project={project} members={members} onClose={() => setRecommendTask(null)} onToast={setToast} setProject={setProject}/>} 
-    {toast && <div className="toast">✓ {toast}</div>}
+    <aside className="sidebar"><div className="brand"><div className="brand-mark">▦</div><div><div className="brand-name">协作账本</div><div className="brand-sub">COLLAB LEDGER</div></div></div><div className="workspace-label">我的工作区</div><div className="project-switch"><select value={project?.id || ''} onChange={e => changeProject(Number(e.target.value))}>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div><nav>{nav.map(item => <button key={item.id} className={`nav-item ${active === item.id ? 'selected' : ''}`} onClick={() => navigate(item.id)}><span className="nav-icon">{item.icon}</span>{item.label}{item.id === 'tasks' && overdue > 0 && <span className="nav-badge">{overdue}</span>}</button>)}</nav><div className="sidebar-tools"><button className="side-tool" onClick={() => navigate('members')}>♧ 成员管理</button><button className="side-tool" onClick={() => navigate('worklog')}>◷ 今日打卡</button><button className="side-tool" onClick={() => navigate('new')}>＋ 新建项目</button></div><div className="sidebar-bottom"><div className="privacy-card"><span className="privacy-icon">◉</span><div><strong>隐私友好设计</strong><p>只记录协作成果，不监控个人设备。</p></div></div><button className="profile-chip" onClick={logout}><div className="avatar avatar-me">{initials(auth.name)}</div><div><strong>{auth.name}</strong><span>退出登录</span></div><span className="more">•••</span></button></div></aside>
+    <main className="main-content"><header className="topbar"><div className="breadcrumb">{active !== 'overview' && <button className="back-button" onClick={() => window.history.back()}>← 返回</button>}<span>项目空间</span><b>/</b><strong>{nav.find(n => n.id === active)?.label || ({ members: '成员管理', worklog: '今日打卡', new: '新建项目' }[active] || '项目总览')}</strong></div><div className="top-actions"><div className="search"><span>⌕</span><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索任务、成员…"/></div><button className="icon-button" title="通知">♢<i/></button><button className="help-button">?</button></div></header><div className="page-wrap">{loading ? <div className="loading-state">正在加载项目空间…</div> : <>{active === 'overview' && <Overview project={project} memberStats={memberStats} tasks={tasks} progress={progress} completed={completed} overdue={overdue} activeTasks={activeTasks} online={online} onNavigate={navigate} onAction={taskAction} onRecommend={setRecommendTask}/>} {active === 'tasks' && <TasksView tasks={tasks.filter(t => !query || `${t.title}${t.assignee_name || ''}`.includes(query))} members={members} onAction={taskAction} onCreate={() => setShowTask(true)} onRecommend={setRecommendTask}/>} {active === 'contributions' && <ContributionsView project={project} members={members} online={online} setProject={setProject} onToast={setToast}/>} {active === 'report' && <ReportView project={project} report={report} memberStats={memberStats} tasks={tasks}/>} {active === 'agent' && <AgentView project={project} online={online} onRecommend={setRecommendTask}/>}{active === 'members' && <MembersModal project={project} currentUser={auth} onClose={() => navigate('overview', project.id, true)} onUpdated={detail => setProject(p => ({ ...p, members: detail.members || p.members }))} onToast={setToast}/>} {active === 'worklog' && <WorklogModal project={project} user={auth} onClose={() => navigate('overview', project.id, true)} onToast={setToast}/>}</>}</div></main>
+    {showTask && <TaskModal members={members} onClose={() => setShowTask(false)} onSave={createTask}/>} {recommendTask && <RecommendModal task={recommendTask} project={project} members={members} onClose={() => setRecommendTask(null)} onToast={setToast} setProject={setProject}/>} {reviewTask && <QualityReviewModal project={project} task={reviewTask} currentUser={auth} members={members} onClose={() => setReviewTask(null)} onSaved={quality => { setProject(p => ({ ...p, tasks: p.tasks.map(t => t.id === reviewTask.id ? { ...t, quality } : t) })); setToast('质量评价已记录') }} />} {toast && <div className="toast">✓ {toast}</div>}
   </div>
 }
 
@@ -137,8 +158,64 @@ function ContributionModal({ members, onClose, onSave }) { const [form, setForm]
 
     function RecommendModal({ task, project, members, onClose, onToast, setProject }) { const [results, setResults] = useState([]); const [busy, setBusy] = useState(true); useEffect(() => { (async () => { try { const q = new URLSearchParams({ task_name: task.title, task_type: task.task_type || '', estimated_hours: task.estimated_hours || 1 }); const r = await getJson(`/api/projects/${project.id}/recommendations?${q}`); setResults(r.recommendations || []) } catch { const scores = members.map((m, i) => ({ user_id: m.id, name: m.name, score: Math.max(62, 92 - i * 8), reasons: { skills: m.skills, average_quality: i === 0 ? 4.7 : 4.2, efficiency: i === 0 ? 1.12 : 1.02, current_load: `${i % 3}/3` } })).sort((a, b) => b.score - a.score); setResults(scores) } finally { setBusy(false) } })() }, []); async function choose(r) { if (task.id) { try { const updated = await sendJson(`/api/tasks/${task.id}`, { method: 'PATCH', body: JSON.stringify({ assignee_id: r.user_id, status: 'assigned' }) }); setProject(p => ({ ...p, tasks: p.tasks.map(t => t.id === task.id ? { ...t, ...updated, assignee_name: r.name } : t) })) } catch { setProject(p => ({ ...p, tasks: p.tasks.map(t => t.id === task.id ? { ...t, assignee_id: r.user_id, assignee_name: r.name, status: 'assigned' } : t) })) } } onToast(`已将「${task.title}」分配给${r.name}`); onClose() } return <div className="modal-backdrop"><div className="modal recommend-modal"><div className="modal-head"><div><span className="eyebrow">AI RECOMMENDATION</span><h2>谁适合负责这个任务？</h2><p className="modal-sub">「{task.title}」 · 基于技能、质量、效率和当前负载</p></div><button onClick={onClose}>×</button></div>{busy ? <div className="recommend-loading"><span className="loader"/>正在计算匹配度…</div> : <div className="recommend-list">{results.map((r, i) => <div className={`recommend-item ${i === 0 ? 'best' : ''}`} key={r.user_id}><div className="rank">{i + 1}</div><div className={`avatar avatar-${i % 5}`}>{initials(r.name)}</div><div className="recommend-main"><div className="recommend-name"><strong>{r.name}</strong>{i === 0 && <span className="best-label">最佳匹配</span>}<span className="score">{Math.round(r.score)}<small>%</small></span></div><div className="reason-chips">{(r.reasons?.skills || []).slice(0, 2).map(s => <span key={s}>⌁ {s}</span>)}<span>质量 {r.reasons?.average_quality || '—'}/5</span><span>负载 {r.reasons?.current_load || '—'}</span></div><div className="match-track"><i style={{ width: `${r.score}%` }}/></div></div><button className="choose-button" onClick={() => choose(r)}>采纳</button></div>)}</div>}<div className="recommend-foot"><span>◉ 推荐仅供参考，不会自动替你做决定。</span><button className="ghost-button" onClick={onClose}>手动指定</button></div></div></div> }
 
-function CreateProjectView({ onCreated }) {
-  const [form, setForm] = useState({ name: '', project_type: '课程项目', description: '', start_date: '', end_date: '', owner_name: '', owner_email: '', skills: '' })
+function AuthView({ onAuthenticated }) {
+  const [mode, setMode] = useState('login')
+  const [form, setForm] = useState({ name: '', email: '', password: '', skills: '' })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  async function submit(event) {
+    event.preventDefault(); setError(''); setBusy(true)
+    try {
+      const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register'
+      const payload = mode === 'login' ? { email: form.email.trim(), password: form.password } : { name: form.name.trim(), email: form.email.trim(), password: form.password, skills: form.skills.split(/[,，]/).map(s => s.trim()).filter(Boolean) }
+      let result = await sendJson(endpoint, { method: 'POST', body: JSON.stringify(payload) })
+      if (mode === 'register' && !result.access_token && !result.token) result = await sendJson('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: form.email.trim(), password: form.password }) })
+      const token = result.access_token || result.token
+      const user = result.user || result.data || { id: result.user_id, name: form.name || form.email.split('@')[0], email: form.email }
+      if (!token) throw new Error('登录接口没有返回 token')
+      localStorage.setItem('collab_token', token); localStorage.setItem('collab_user', JSON.stringify(user)); onAuthenticated(user)
+    } catch (err) { setError(err.status === 409 ? '该邮箱已经注册，请直接登录。' : '操作失败，请确认后端已启动，并检查账号信息。') } finally { setBusy(false) }
+  }
+  return <div className="auth-screen"><div className="auth-card"><div className="brand create-brand"><div className="brand-mark">▦</div><div><div className="brand-name">协作账本</div><div className="brand-sub">COLLAB LEDGER</div></div></div><div className="eyebrow">TEAM WORKSPACE</div><h1>{mode === 'login' ? '登录你的协作空间' : '创建一个协作账号'}</h1><p className="create-project-desc">项目数据只会与团队协作相关，不采集私人设备信息。</p><form onSubmit={submit}>{mode === 'register' && <label>姓名<input autoFocus value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="例如：张三" required /></label>}<label>邮箱<input autoFocus={mode === 'login'} type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="name@example.com" required /></label><label>密码<input type="password" minLength="8" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder="至少 8 位字符" required /></label>{mode === 'register' && <label>技能（逗号分隔）<input value={form.skills} onChange={e => setForm(f => ({ ...f, skills: e.target.value }))} placeholder="前端，Python，文档" /></label>}{error && <div className="form-error">{error}</div>}<button className="primary-button create-submit" disabled={busy}>{busy ? '请稍候…' : mode === 'login' ? '登录并进入工作台 →' : '注册账号 →'}</button></form><button className="auth-switch" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }}>{mode === 'login' ? '还没有账号？立即注册' : '已有账号？返回登录'}</button></div></div>
+}
+
+function MembersModal({ project, currentUser, onClose, onUpdated, onToast }) {
+  const [members, setMembers] = useState(project.members || [])
+  const [form, setForm] = useState({ name: '', email: '', skills: '', role: 'member' })
+  const [invite, setInvite] = useState(null)
+  const [busy, setBusy] = useState(false)
+  async function addMember(event) {
+    event.preventDefault(); if (!form.name.trim() && !form.email.trim()) return
+    setBusy(true)
+    try { const created = await sendJson(`/api/projects/${project.id}/members`, { method: 'POST', body: JSON.stringify({ name: form.name.trim() || form.email.split('@')[0], email: form.email.trim() || null, skills: form.skills.split(/[,，]/).map(s => s.trim()).filter(Boolean), role: form.role }) }); const next = [...members.filter(m => m.id !== created.id), created]; setMembers(next); onUpdated({ members: next }); setForm({ name: '', email: '', skills: '', role: 'member' }); onToast('成员已加入项目') } catch { onToast('添加成员失败，请检查权限') } finally { setBusy(false) }
+  }
+  async function createInvite() {
+    try { const result = await sendJson(`/api/projects/${project.id}/invitations`, { method: 'POST', body: JSON.stringify({ email: form.email.trim() || null, role: form.role, expires_days: 7, inviter_id: currentUser.id }) }); setInvite(result); onToast('邀请链接已生成') } catch { onToast('生成邀请失败，请检查权限') }
+  }
+  async function updateRole(member, role) {
+    try { const updated = await sendJson(`/api/projects/${project.id}/members/${member.id}`, { method: 'PATCH', body: JSON.stringify({ role }) }); const next = members.map(m => m.id === member.id ? { ...m, ...updated, role } : m); setMembers(next); onUpdated({ members: next }) } catch { onToast('角色更新失败') }
+  }
+  return <div className="modal-backdrop"><div className="modal members-modal"><div className="modal-head"><div><span className="eyebrow">TEAM MANAGEMENT</span><h2>成员与邀请</h2><p className="modal-sub">维护成员身份、技能和项目角色。</p></div><button onClick={onClose}>×</button></div><div className="member-manage-list">{members.map(m => <div className="member-manage-row" key={m.id}><div className="avatar avatar-0">{initials(m.name)}</div><div className="member-manage-info"><strong>{m.name}</strong><span>{m.email || '未设置邮箱'} · {(m.skills || []).join('、') || '未填写技能'}</span></div><select value={m.role || 'member'} disabled={m.id === project.owner_id} onChange={e => updateRole(m, e.target.value)}><option value="owner">组长</option><option value="member">成员</option><option value="viewer">只读</option></select></div>)}</div><div className="form-section-title">添加成员</div><form className="member-add-form" onSubmit={addMember}><div className="form-row"><label>姓名<input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="成员姓名" /></label><label>邮箱<input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="用于邀请或识别账号" /></label></div><div className="form-row"><label>技能<input value={form.skills} onChange={e => setForm(f => ({ ...f, skills: e.target.value }))} placeholder="前端，测试" /></label><label>角色<select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}><option value="member">成员</option><option value="viewer">只读</option></select></label></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={createInvite}>生成邀请链接</button><button className="primary-button" disabled={busy}>{busy ? '添加中…' : '直接添加成员'}</button></div></form>{invite && <div className="invite-result"><strong>邀请已生成</strong><span>{invite.invite_url || invite.url || `邀请码：${invite.invite_code || invite.code || invite.token}`}</span><button className="ghost-button" onClick={() => navigator.clipboard?.writeText(invite.invite_url || invite.url || invite.invite_code || invite.code || invite.token)}>复制</button></div>}</div></div>
+}
+
+function WorklogModal({ project, user, onClose, onToast }) {
+  const today = new Date().toISOString().slice(0, 10)
+  const [form, setForm] = useState({ work_date: today, hours: 0, note: '', check_in: '', check_out: '' })
+  const [busy, setBusy] = useState(false)
+  async function save(payload) { setBusy(true); try { await sendJson(`/api/projects/${project.id}/work-logs`, { method: 'POST', body: JSON.stringify({ ...form, ...payload, user_id: user.id }) }); onToast('工作日志已保存'); onClose() } catch { onToast('保存工作日志失败') } finally { setBusy(false) } }
+  return <div className="modal-backdrop"><div className="modal worklog-modal"><div className="modal-head"><div><span className="eyebrow">WORK LOG</span><h2>今日主动打卡</h2><p className="modal-sub">记录投入时间和可复盘的工作事实。</p></div><button onClick={onClose}>×</button></div><div className="check-in-actions"><button className="check-button" disabled={busy} onClick={() => save({ check_in: new Date().toISOString() })}>◷ 开始工作</button><button className="check-button secondary" disabled={busy} onClick={() => save({ check_out: new Date().toISOString() })}>✓ 结束工作</button></div><label>日期<input type="date" value={form.work_date} onChange={e => setForm(f => ({ ...f, work_date: e.target.value }))} /></label><div className="form-row"><label>投入小时<input type="number" min="0" max="24" step="0.5" value={form.hours} onChange={e => setForm(f => ({ ...f, hours: Number(e.target.value) }))} /></label><label>状态<span className="worklog-status">{form.check_in ? '已开始' : '未开始'}{form.check_out ? ' · 已结束' : ''}</span></label></div><label>工作说明<textarea value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} placeholder="完成了什么、遇到什么阻塞、下一步是什么？" /></label><div className="modal-actions"><button className="ghost-button" onClick={onClose}>取消</button><button className="primary-button" disabled={busy} onClick={() => save({})}>保存日志</button></div></div></div>
+}
+
+function QualityReviewModal({ project, task, currentUser, members, onClose, onSaved }) {
+  const [score, setScore] = useState(task.quality || 4)
+  const [comment, setComment] = useState('')
+  const [busy, setBusy] = useState(false)
+  async function submit() { setBusy(true); try { await sendJson(`/api/projects/${project.id}/quality-reviews`, { method: 'POST', body: JSON.stringify({ task_id: task.id, reviewer_id: currentUser.id, reviewee_id: task.assignee_id || currentUser.id, score: Number(score), comment }) }); onSaved(Number(score)); onClose() } catch { try { await sendJson(`/api/tasks/${task.id}`, { method: 'PATCH', body: JSON.stringify({ quality: Number(score), user_id: currentUser.id, note: comment }) }); onSaved(Number(score)); onClose() } catch { onClose() } } finally { setBusy(false) } }
+  return <div className="modal-backdrop"><div className="modal quality-modal"><div className="modal-head"><div><span className="eyebrow">QUALITY REVIEW</span><h2>评价任务交付质量</h2><p className="modal-sub">「{task.title}」 · {task.assignee_name || members.find(m => m.id === task.assignee_id)?.name || '未分配'}</p></div><button onClick={onClose}>×</button></div><label>质量评分 <span className="quality-value">{Number(score).toFixed(1)} / 5</span><input className="quality-range" type="range" min="0" max="5" step="0.5" value={score} onChange={e => setScore(e.target.value)} /></label><label>评价说明<textarea value={comment} onChange={e => setComment(e.target.value)} placeholder="从完成度、准确性、协作交付等方面记录事实…" /></label><div className="modal-actions"><button className="ghost-button" onClick={onClose}>稍后评价</button><button className="primary-button" disabled={busy} onClick={submit}>{busy ? '保存中…' : '提交评价'}</button></div></div></div>
+}
+
+function CreateProjectView({ currentUser, onCreated, onCancel }) {
+  const [form, setForm] = useState({ name: '', project_type: '课程项目', description: '', start_date: '', end_date: '', owner_name: currentUser?.name || '', owner_email: currentUser?.email || '', skills: (currentUser?.skills || []).join('，') })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const update = (key, value) => setForm(current => ({ ...current, [key]: value }))
@@ -147,12 +224,12 @@ function CreateProjectView({ onCreated }) {
     if (!form.name.trim() || !form.owner_name.trim()) { setError('请填写项目名称和负责人姓名'); return }
     setBusy(true)
     try {
-      const owner = await sendJson('/api/users', { method: 'POST', body: JSON.stringify({ name: form.owner_name.trim(), email: form.owner_email.trim() || null, skills: form.skills.split(/[,，]/).map(s => s.trim()).filter(Boolean), status: 'online' }) })
+      const owner = currentUser?.id ? currentUser : await sendJson('/api/users', { method: 'POST', body: JSON.stringify({ name: form.owner_name.trim(), email: form.owner_email.trim() || null, skills: form.skills.split(/[,，]/).map(s => s.trim()).filter(Boolean), status: 'online' }) })
       const project = await sendJson('/api/projects', { method: 'POST', body: JSON.stringify({ name: form.name.trim(), project_type: form.project_type, description: form.description.trim() || null, start_date: form.start_date || null, end_date: form.end_date || null, owner_id: owner.id }) })
       await onCreated(project)
     } catch (err) { setError('创建失败，请确认后端已启动，并检查项目名称和负责人信息。') } finally { setBusy(false) }
   }
-  return <div className="create-project-screen"><div className="create-project-card"><div className="brand create-brand"><div className="brand-mark">▦</div><div><div className="brand-name">协作账本</div><div className="brand-sub">COLLAB LEDGER</div></div></div><div className="eyebrow">FIRST PROJECT</div><h1>创建你的第一个项目</h1><p className="create-project-desc">项目数据会写入 SQLite，之后任务、贡献和 Agent 记忆都会归属于这个真实项目。</p><form onSubmit={submit}><div className="form-row"><label>项目名称<input autoFocus value={form.name} onChange={e => update('name', e.target.value)} placeholder="例如：软件工程课程大作业" /></label><label>项目类型<select value={form.project_type} onChange={e => update('project_type', e.target.value)}><option>课程项目</option><option>竞赛项目</option><option>科研项目</option><option>其他</option></select></label></div><label>项目简介<textarea value={form.description} onChange={e => update('description', e.target.value)} placeholder="说明项目目标和协作范围…" /></label><div className="form-row"><label>开始日期<input type="date" value={form.start_date} onChange={e => update('start_date', e.target.value)} /></label><label>结束日期<input type="date" value={form.end_date} onChange={e => update('end_date', e.target.value)} /></label></div><div className="form-section-title">创建者 / 组长</div><div className="form-row"><label>姓名<input value={form.owner_name} onChange={e => update('owner_name', e.target.value)} placeholder="例如：张三" /></label><label>邮箱（可选）<input value={form.owner_email} onChange={e => update('owner_email', e.target.value)} placeholder="name@example.com" /></label></div><label>擅长领域（逗号分隔）<input value={form.skills} onChange={e => update('skills', e.target.value)} placeholder="Python，后端，数据分析" /></label>{error && <div className="form-error">{error}</div>}<button className="primary-button create-submit" disabled={busy}>{busy ? '正在创建…' : '创建项目并进入工作台 →'}</button></form><div className="create-privacy">◉ 只记录项目协作成果，不采集私人聊天、桌面、摄像头或键鼠数据。</div></div></div>
+  return <div className="create-project-screen"><div className="create-project-card"><div className="brand create-brand"><div className="brand-mark">▦</div><div><div className="brand-name">协作账本</div><div className="brand-sub">COLLAB LEDGER</div></div></div><div className="eyebrow">FIRST PROJECT</div><h1>创建你的第一个项目</h1><p className="create-project-desc">项目数据会写入 SQLite，之后任务、贡献和 Agent 记忆都会归属于这个真实项目。</p><form onSubmit={submit}><div className="form-row"><label>项目名称<input autoFocus value={form.name} onChange={e => update('name', e.target.value)} placeholder="例如：软件工程课程大作业" /></label><label>项目类型<select value={form.project_type} onChange={e => update('project_type', e.target.value)}><option>课程项目</option><option>竞赛项目</option><option>科研项目</option><option>其他</option></select></label></div><label>项目简介<textarea value={form.description} onChange={e => update('description', e.target.value)} placeholder="说明项目目标和协作范围…" /></label><div className="form-row"><label>开始日期<input type="date" value={form.start_date} onChange={e => update('start_date', e.target.value)} /></label><label>结束日期<input type="date" value={form.end_date} onChange={e => update('end_date', e.target.value)} /></label></div><div className="form-section-title">创建者 / 组长</div><div className="form-row"><label>姓名<input value={form.owner_name} onChange={e => update('owner_name', e.target.value)} placeholder="例如：张三" /></label><label>邮箱（可选）<input value={form.owner_email} onChange={e => update('owner_email', e.target.value)} placeholder="name@example.com" /></label></div><label>擅长领域（逗号分隔）<input value={form.skills} onChange={e => update('skills', e.target.value)} placeholder="Python，后端，数据分析" /></label>{error && <div className="form-error">{error}</div>}<div className="create-form-actions">{onCancel && <button type="button" className="ghost-button" onClick={onCancel}>返回当前项目</button>}<button className="primary-button create-submit" disabled={busy}>{busy ? '正在创建…' : '创建项目并进入工作台 →'}</button></div></form><div className="create-privacy">◉ 只记录项目协作成果，不采集私人聊天、桌面、摄像头或键鼠数据。</div></div></div>
 }
 
 class AppErrorBoundary extends React.Component {
