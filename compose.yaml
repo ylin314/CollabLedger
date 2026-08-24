@@ -1,0 +1,33 @@
+name: collab-ledger
+
+services:
+  collab-ledger:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: collab-ledger:latest
+    container_name: collab-ledger
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      COLLAB_DB: /data/collab.db
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://aigw.saurlax.com/}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      LLM_CHAT_COMPLETIONS_URL: ${LLM_CHAT_COMPLETIONS_URL:-}
+    volumes:
+      - collab-ledger-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  collab-ledger-data:
