@@ -37,6 +37,11 @@ Cookie: collab_session=<session_id>
 | `member` | 可处理自己负责的任务、打卡、记录自己的贡献 |
 | `viewer` | 只读，可查看项目数据和报告 |
 
+> 任务评审人与导师观察者的规则如下（字段细节以 `B_业务接口文档.md` 第 10 章为准）：
+>
+> - **任务级评审人（reviewer）**：挂在单个任务上（`tasks.reviewer_id`，可空），不是项目角色。任务无评审人时仅 owner 可评价，有评审人时 owner 或该评审人可评价（当前实现仍在逐步落地）。
+> - **导师观察者（mentor）**：复用 `viewer` 角色，创建项目或单独邀请时均通过邀请链接加入；导师本人接受后才建立 membership，可被指定为任务评审人。不新增顶层角色。
+
 权限规则：
 
 - 未登录：`401`
@@ -293,7 +298,10 @@ POST /api/projects
   "project_type": "课程项目",
   "description": "面向小组作业的协作管理系统",
   "start_date": "2026-09-01",
-  "end_date": "2026-12-20"
+  "end_date": "2026-12-20",
+  "mentors": [
+    { "email": "mentor@example.com" }
+  ]
 }
 ```
 
@@ -301,10 +309,11 @@ POST /api/projects
 
 - `name`：必填，1-100 字符
 - `end_date` 不能早于 `start_date`
+- `mentors`：可选的导师邀请目标列表；每项包含导师邮箱。创建项目时仅生成并发送 `role="viewer"` 邀请链接，不直接加入导师；导师接受链接后才以 `viewer` 身份加入。
 
 成功响应：`201 Created`
 
-返回项目详情。创建人自动成为 `owner`。
+返回项目详情。创建人自动成为 `owner`。若传入 `mentors`，响应增加 `mentor_invitations` 列表，返回对应的导师邀请对象及 `invite_url`；这些导师在接受邀请前不是项目成员。
 
 ### 3.3 获取项目详情
 
@@ -486,9 +495,12 @@ POST /api/projects/{project_id}/invitations
 {
   "role": "member",
   "expires_in_hours": 168,
-  "max_uses": 10
+  "max_uses": 10,
+  "email": "mentor@example.com"
 }
 ```
+
+`role` 可取 `member` 或 `viewer`。给导师发送邀请时使用 `role="viewer"`，通常指定 `email` 且设置 `max_uses=1`；导师本人通过 `invite_url` 接受后才加入项目，不得由 owner 直接代为加入。
 
 成功响应：`201 Created`
 
@@ -626,6 +638,8 @@ unassigned → assigned → in_progress → completed
 }
 ```
 
+> 📌 计划中（代码未实现）：任务对象将新增 `reviewer_id` / `reviewer_name`（可空），表示该任务的授权评审人。创建时指定或留空，owner 或任务创建者可改。详见 `B_业务接口文档.md` 4.2 / 4.4 / 4.6。
+
 ### 5.3 获取任务列表
 
 ```http
@@ -690,6 +704,8 @@ POST /api/projects/{project_id}/tasks
 
 - 指定负责人时，负责人必须是项目成员
 - 归档项目不允许创建任务
+
+> 📌 计划中（代码未实现）：可传 `reviewer_id`（可选）指定任务评审人，须为项目成员；留空则默认仅 owner 评审。后续由 owner 或任务创建者修改。详见 `B_业务接口文档.md` 10.1。
 
 ### 5.5 获取任务详情
 
@@ -946,6 +962,9 @@ POST /api/tasks/{task_id}/review
 
 权限：`owner` 或被授权评审人。
 
+> 现状（已实现）：**仅 owner** 可评价。
+> 📌 计划中（代码未实现）：引入任务级评审人后放宽为——任务无评审人时仅 owner；任务有 `reviewer_id` 时 owner 或该评审人可评价。详见 `B_业务接口文档.md` 6.2 / 10.1。
+
 请求：
 
 ```json
@@ -968,7 +987,7 @@ POST /api/tasks/{task_id}/review
 
 - 任务必须处于 `completed` 状态
 - 已存在评价可覆盖更新，但保留历史
-- 普通成员不能评价自己的任务
+- 普通成员不能评价自己的任务（评审人 ≠ 任务负责人）
 
 ### 7.3 获取任务评价
 
