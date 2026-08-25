@@ -62,9 +62,16 @@ def create_project(payload: ProjectIn, request: Request = None) -> dict[str, Any
         (payload.name.strip(), payload.project_type, payload.description, payload.start_date.isoformat() if payload.start_date else None, payload.end_date.isoformat() if payload.end_date else None, owner_id, stamp, stamp),
     )
     conn.execute("INSERT INTO memberships(project_id,user_id,role,joined_at,updated_at) VALUES (?,?, 'owner',?,?)", (cur.lastrowid, owner_id, stamp, stamp))
+    project_id = cur.lastrowid
+    mentor_invitations = [
+        _insert_invitation(conn, project_id, owner_id, role="viewer", email=mentor.email, max_uses=1, hours=168, is_mentor=True)
+        for mentor in payload.mentors
+    ]
     conn.commit()
-    project = conn.execute("SELECT * FROM projects WHERE id=?", (cur.lastrowid,)).fetchone()
+    project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     out = _project_detail(conn, project, "owner")
+    if mentor_invitations:
+        out["mentor_invitations"] = mentor_invitations
     conn.close()
     return out
 
@@ -181,20 +188,27 @@ def remove_member(project_id: int, user_id: int, request: Request) -> Response:
 
 def _invitation_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     out = dict(row)
-    return {"id": out["id"], "code": out["invite_code"], "role": out["role"], "expires_at": out["expires_at"], "max_uses": out["max_uses"], "used_count": out["used_count"], "revoked": bool(out["revoked"]), "invite_url": f"/invite/{out['invite_code']}"}
+    return {"id": out["id"], "code": out["invite_code"], "role": out["role"], "expires_at": out["expires_at"], "max_uses": out["max_uses"], "used_count": out["used_count"], "revoked": bool(out["revoked"]), "is_mentor": bool(out.get("is_mentor")), "invite_url": f"/invite/{out['invite_code']}"}
+
+
+def _insert_invitation(conn: sqlite3.Connection, project_id: int, inviter_id: int, *, role: str, email: Optional[str], max_uses: int, hours: int, is_mentor: bool) -> dict[str, Any]:
+    code = secrets.token_urlsafe(9).replace("-", "").replace("_", "")[:12].upper()
+    expires = iso_utc(datetime.now(timezone.utc) + timedelta(hours=hours)); stamp = now_iso()
+    cur = conn.execute(
+        """INSERT INTO project_invitations(project_id,inviter_id,invite_hash,invite_code,email,role,expires_at,accepted_at,created_at,max_uses,used_count,revoked,updated_at,is_mentor)
+        VALUES (?,?,?,?,?,?,?,NULL,?,?,0,0,?,?)""",
+        (project_id, inviter_id, code, code, email, role, expires, stamp, max_uses, stamp, 1 if is_mentor else 0),
+    )
+    row = conn.execute("SELECT * FROM project_invitations WHERE id=?", (cur.lastrowid,)).fetchone()
+    return _invitation_dict(row)
 
 
 @router.post("/api/projects/{project_id}/invitations", status_code=201)
 def create_invitation(project_id: int, payload: InvitationIn, request: Request) -> dict[str, Any]:
     conn = db(); project, user, _ = ensure_project_access(conn, project_id, request, "owner"); ensure_writable(project); assert user is not None
-    code = secrets.token_urlsafe(9).replace("-", "").replace("_", "")[:12].upper()
     hours = payload.expires_days * 24 if payload.expires_days else payload.expires_in_hours
-    expires = iso_utc(datetime.now(timezone.utc) + timedelta(hours=hours)); stamp = now_iso()
-    cur = conn.execute(
-        """INSERT INTO project_invitations(project_id,inviter_id,invite_hash,invite_code,email,role,expires_at,accepted_at,created_at,max_uses,used_count,revoked,updated_at)
-        VALUES (?,?,?,?,?,?,?,NULL,?,?,0,0,?)""",
-        (project_id, user["id"], code, code, payload.email, payload.role, expires, stamp, payload.max_uses, stamp),
-    ); conn.commit(); row = conn.execute("SELECT * FROM project_invitations WHERE id=?", (cur.lastrowid,)).fetchone(); conn.close(); return _invitation_dict(row)
+    out = _insert_invitation(conn, project_id, user["id"], role=payload.role, email=payload.email, max_uses=payload.max_uses, hours=hours, is_mentor=payload.is_mentor)
+    conn.commit(); conn.close(); return out
 
 
 @router.get("/api/projects/{project_id}/invitations")
@@ -253,4 +267,4 @@ def accept_invitation(payload: AcceptInvitationIn, request: Request) -> dict[str
     if not code: fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "code", "message": "邀请码不能为空"}])
     return _accept_code(code, request)
 
-__all__ = ['list_projects', 'create_project', 'get_project', 'update_project', 'archive_project', 'restore_project', 'delete_project', 'add_member', 'list_members', 'update_member_role', 'remove_member', '_invitation_dict', 'create_invitation', 'list_invitations', 'revoke_invitation', '_load_invitation', '_invitation_valid', 'get_invitation', '_accept_code', 'accept_invitation_code', 'accept_invitation']
+__all__ = ['list_projects', 'create_project', 'get_project', 'update_project', 'archive_project', 'restore_project', 'delete_project', 'add_member', 'list_members', 'update_member_role', 'remove_member', '_invitation_dict', '_insert_invitation', 'create_invitation', 'list_invitations', 'revoke_invitation', '_load_invitation', '_invitation_valid', 'get_invitation', '_accept_code', 'accept_invitation_code', 'accept_invitation']

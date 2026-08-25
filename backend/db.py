@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.models import Base
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = r'''
 CREATE TABLE IF NOT EXISTS users (
@@ -40,11 +40,12 @@ CREATE TABLE IF NOT EXISTS tasks (
  id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, title TEXT NOT NULL,
  description TEXT, assignee_id INTEGER, status TEXT NOT NULL DEFAULT 'unassigned',
  due_date TEXT, estimated_hours REAL, actual_hours REAL, quality REAL, task_type TEXT,
- priority TEXT NOT NULL DEFAULT 'medium', created_by INTEGER, created_at TEXT NOT NULL,
- updated_at TEXT NOT NULL, deleted_at TEXT,
+ priority TEXT NOT NULL DEFAULT 'medium', created_by INTEGER, reviewer_id INTEGER,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT,
  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
  FOREIGN KEY(assignee_id) REFERENCES users(id) ON DELETE SET NULL,
- FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
+ FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL,
+ FOREIGN KEY(reviewer_id) REFERENCES users(id) ON DELETE SET NULL
 );
 CREATE TABLE IF NOT EXISTS task_logs (
  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, user_id INTEGER,
@@ -72,7 +73,7 @@ CREATE TABLE IF NOT EXISTS project_invitations (
  invite_hash TEXT NOT NULL UNIQUE, invite_code TEXT NOT NULL UNIQUE, email TEXT,
  role TEXT NOT NULL DEFAULT 'member', expires_at TEXT NOT NULL, accepted_at TEXT,
  created_at TEXT NOT NULL, max_uses INTEGER NOT NULL DEFAULT 1, used_count INTEGER NOT NULL DEFAULT 0,
- revoked INTEGER NOT NULL DEFAULT 0, revoked_at TEXT, updated_at TEXT,
+ revoked INTEGER NOT NULL DEFAULT 0, revoked_at TEXT, updated_at TEXT, is_mentor INTEGER NOT NULL DEFAULT 0,
  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
  FOREIGN KEY(inviter_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -378,9 +379,9 @@ def initialize(path: str | Path | None = None) -> None:
     _add_columns(conn, "users", {"password_hash": "TEXT", "updated_at": "TEXT"})
     _add_columns(conn, "projects", {"status": "TEXT NOT NULL DEFAULT 'active'", "updated_at": "TEXT", "archived_at": "TEXT", "deleted_at": "TEXT"})
     _add_columns(conn, "memberships", {"updated_at": "TEXT"})
-    _add_columns(conn, "tasks", {"priority": "TEXT NOT NULL DEFAULT 'medium'", "created_by": "INTEGER", "deleted_at": "TEXT"})
+    _add_columns(conn, "tasks", {"priority": "TEXT NOT NULL DEFAULT 'medium'", "created_by": "INTEGER", "reviewer_id": "INTEGER", "deleted_at": "TEXT"})
     _add_columns(conn, "task_logs", {"from_status": "TEXT", "to_status": "TEXT"})
-    _add_columns(conn, "project_invitations", {"max_uses": "INTEGER NOT NULL DEFAULT 1", "used_count": "INTEGER NOT NULL DEFAULT 0", "revoked": "INTEGER NOT NULL DEFAULT 0", "revoked_at": "TEXT", "updated_at": "TEXT"})
+    _add_columns(conn, "project_invitations", {"max_uses": "INTEGER NOT NULL DEFAULT 1", "used_count": "INTEGER NOT NULL DEFAULT 0", "revoked": "INTEGER NOT NULL DEFAULT 0", "revoked_at": "TEXT", "updated_at": "TEXT", "is_mentor": "INTEGER NOT NULL DEFAULT 0"})
     _add_columns(conn, "contributions", {"evidence_url": "TEXT", "status": "TEXT NOT NULL DEFAULT 'pending'", "source": "TEXT NOT NULL DEFAULT 'manual'", "occurred_at": "TEXT", "updated_at": "TEXT", "created_by": "INTEGER", "confirmed_by": "INTEGER", "confirmed_at": "TEXT", "confirmation_note": "TEXT", "dispute_note": "TEXT", "deleted_at": "TEXT"})
     _add_columns(conn, "agent_memory", {"user_id": "INTEGER"})
     stamp = now_iso()
