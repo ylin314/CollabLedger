@@ -17,6 +17,15 @@ from backend.schemas import *
 
 router = APIRouter()
 
+# 邀请码字符集与长度：文档约定为 12 位大写字符串（大小写不敏感查询）。
+# 排除易混淆字符（0/O、1/I）以降低人工转录出错。
+_INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_INVITE_CODE_LEN = 12
+
+
+def _generate_invite_code() -> str:
+    return "".join(secrets.choice(_INVITE_CODE_ALPHABET) for _ in range(_INVITE_CODE_LEN))
+
 @router.get("/api/projects")
 def list_projects(
     request: Request, archived: bool = False, keyword: Optional[str] = None,
@@ -196,7 +205,7 @@ def _invitation_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
 
 
 def _insert_invitation(conn: sqlite3.Connection, project_id: int, inviter_id: int, *, role: str, email: Optional[str], max_uses: int, hours: int, is_mentor: bool) -> dict[str, Any]:
-    code = secrets.token_urlsafe(9).replace("-", "").replace("_", "")[:12].upper()
+    code = _generate_invite_code()
     expires = iso_utc(datetime.now(timezone.utc) + timedelta(hours=hours)); stamp = now_iso()
     cur = conn.execute(
         """INSERT INTO project_invitations(project_id,inviter_id,invite_hash,invite_code,email,role,expires_at,accepted_at,created_at,max_uses,used_count,revoked,updated_at,is_mentor)

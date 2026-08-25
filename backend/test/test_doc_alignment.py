@@ -113,3 +113,18 @@ def test_invitation_response_has_is_mentor(monkeypatch, tmp_path):
     listed = owner.get(f"/api/projects/{pid}/invitations").json()["items"]
     assert all("is_mentor" in item for item in listed)
 
+
+def test_invitation_code_is_12_uppercase_chars(monkeypatch, tmp_path):
+    """3.4: 邀请码为 12 位大写字符串（含数字），不含小写或 url-safe 符号。"""
+    _setup(monkeypatch, tmp_path, "invite-code-format.db")
+    owner = _client()
+    _account(owner, "Owner", "owner-ic@example.com")
+    pid = owner.post("/api/projects", json={"name": "邀请码项目"}).json()["id"]
+
+    # 多次生成，确认长度与字符集稳定（token_urlsafe 去符号后会偶发短于 12 位）。
+    for _ in range(30):
+        code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
+        assert len(code) == 12, f"邀请码应为 12 位，实际 {len(code)}：{code!r}"
+        assert code.isupper() or code.isdigit(), f"邀请码应全大写/数字：{code!r}"
+        assert all(ch.isalnum() and (ch.isupper() or ch.isdigit()) for ch in code), f"邀请码含非法字符：{code!r}"
+

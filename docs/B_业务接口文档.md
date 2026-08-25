@@ -1049,7 +1049,7 @@ DELETE /api/contributions/{contribution_id}
 
 已实现（B 侧）：
 
-1. `tasks.reviewer_id` 可空外键（`db.py` SCHEMA_SQL + 前向迁移 `_add_columns`，schema 版本升至 `3`）。
+1. `tasks.reviewer_id` 可空外键（`db.py` SCHEMA_SQL + 前向迁移 `_add_columns`，schema 版本升至 `4`）。
 2. 评价接口（6.2）权限改为「owner 或该任务 reviewer」，最低角色放宽到 viewer 后再判定。
 3. `project_invitations.is_mentor` 标记（默认 `0`），创建项目 `mentors` 与邀请接口 `is_mentor` 均已支持。评审授权记录在任务上（变更进任务日志），未新增授权表。
 
