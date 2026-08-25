@@ -6,19 +6,19 @@ from typing import Any, Optional
 
 from backend.core.context import *
 
-RECOMMEND_WEIGHTS = {"skill": 0.4, "quality": 0.3, "efficiency": 0.2, "load": 0.1}
-RECOMMEND_DISCLAIMER = "推荐仅供参考，最终由组长决定。"
+from backend.services.recommend import (
+    RECOMMEND_DISCLAIMER,
+    RECOMMEND_WEIGHTS,
+    batch_recommendations,
+    build_recommendation_payload,
+    decide_recommendation,
+    internal_recommendations,
+    list_recommendation_history,
+    persist_recommendation_record,
+    recommendations,
+)
+
 LOAD_LABELS = {"low": "低负载", "normal": "正常", "high": "高负载"}
-
-
-def _skill_match(skills: list[str], task_name: str, task_type: Optional[str]) -> tuple[float, list[str]]:
-    haystack = f"{task_type or ''} {task_name}".lower()
-    matched = []
-    for skill in skills:
-        token = str(skill).strip().lower()
-        if token and (token in haystack or haystack in token):
-            matched.append(skill)
-    return (1.0 if matched else 0.0), matched
 
 
 def internal_member_load(project_id: int) -> dict[str, Any]:
@@ -41,79 +41,6 @@ def internal_member_load(project_id: int) -> dict[str, Any]:
     return {"project_id": project_id, "generated_at": now_iso(), "rule": "负载 = 当前占用任务数 / 最大并发任务数；<0.5 低负载，0.5-0.8 正常，>0.8 高负载", "members": result}
 
 
-def internal_recommendations(project_id: int, task_name: str, task_type: Optional[str], estimated_hours: float = 1, limit: int = 3) -> list[dict[str, Any]]:
-    load = internal_member_load(project_id); conn = db(); result = []
-    for member in load["members"]:
-        if member["current_task_count"] >= member["max_concurrent_tasks"]:
-            continue
-        row = conn.execute("SELECT skills FROM users WHERE id=?", (member["user_id"],)).fetchone()
-        skills = json.loads(row["skills"] or "[]")
-        skill_match, matched_skills = _skill_match(skills, task_name, task_type)
-        quality_row = conn.execute(
-            "SELECT AVG(COALESCE(r.quality,t.quality)) q, COUNT(COALESCE(r.quality,t.quality)) n FROM tasks t LEFT JOIN task_reviews r ON r.task_id=t.id WHERE t.project_id=? AND t.assignee_id=? AND (r.quality IS NOT NULL OR t.quality IS NOT NULL)",
-            (project_id, member["user_id"]),
-        ).fetchone()
-        quality = quality_row["q"] or 0
-        quality_samples = quality_row["n"] or 0
-        ratios = [r["ratio"] for r in conn.execute("SELECT CASE WHEN actual_hours>0 THEN estimated_hours/actual_hours END ratio FROM tasks WHERE project_id=? AND assignee_id=? AND status='completed' AND estimated_hours IS NOT NULL AND actual_hours IS NOT NULL", (project_id, member["user_id"])).fetchall() if r["ratio"] is not None]
-        efficiency = sum(ratios) / len(ratios) if ratios else 1.0
-        capacity_score = 1 - member["load_ratio"]
-        score = 100 * (
-            RECOMMEND_WEIGHTS["skill"] * skill_match
-            + RECOMMEND_WEIGHTS["quality"] * (quality / 5)
-            + RECOMMEND_WEIGHTS["efficiency"] * min(1.2, efficiency) / 1.2
-            + RECOMMEND_WEIGHTS["load"] * capacity_score
-        )
-        quality_text = f"{round(quality, 1)}/5（{quality_samples} 条评价）" if quality_samples else "暂无质量评价，该项按 0 计"
-        summary = (
-            f"技能匹配度 {round(skill_match * 100)}%"
-            f"{('（命中：' + '、'.join(matched_skills) + '）') if matched_skills else ''}，"
-            f"历史质量 {quality_text}，效率 {round(efficiency, 2)}，当前负载 {member['current_task_count']}/{member['max_concurrent_tasks']}。"
-        )
-        result.append({
-            "user_id": member["user_id"], "name": member["name"], "score": round(score, 1), "weights": RECOMMEND_WEIGHTS,
-            "reasons": {
-                "skill_match": round(skill_match, 2), "matched_skills": matched_skills, "average_quality": round(quality, 2),
-                "quality_samples": quality_samples, "efficiency": round(efficiency, 2), "efficiency_samples": len(ratios),
-                "current_load": f"{member['current_task_count']}/{member['max_concurrent_tasks']}", "load_level": member["load_level"],
-                "summary": summary,
-                "evidence": [
-                    f"技能：成员技能 {skills or ['未填写']}，任务类型/标题为「{task_type or task_name}」",
-                    f"质量：已完成任务平均分 {quality_text}",
-                    f"效率：预计/实际工时比 {round(efficiency, 2)}（{len(ratios)} 条完成记录）",
-                    f"负载：当前占用 {member['current_task_count']} / 上限 {member['max_concurrent_tasks']}",
-                ],
-            },
-        })
-    conn.close()
-    return sorted(result, key=lambda item: item["score"], reverse=True)[:limit]
-
-
-def recommendations(project_id: int, task_name: str, task_type: Optional[str], estimated_hours: float = 1) -> list[dict[str, Any]]:
-    return internal_recommendations(project_id, task_name, task_type, estimated_hours)
-
-
-def persist_recommendation_record(project_id: int, task_id: Optional[int], task_name: Optional[str], generated_by: Optional[int], payload: dict[str, Any]) -> None:
-    conn = db()
-    conn.execute(
-        "INSERT INTO recommendations(project_id,task_id,task_name,generated_by,payload,created_at) VALUES (?,?,?,?,?,?)",
-        (project_id, task_id, task_name, generated_by, json.dumps(payload, ensure_ascii=False), now_iso()),
-    )
-    conn.commit(); conn.close()
-
-
-def build_recommendation_payload(project_id: int, task_id: Optional[int], task_name: str, task_type: Optional[str], estimated_hours: float, limit: int, generated_by: Optional[int] = None) -> dict[str, Any]:
-    items = internal_recommendations(project_id, task_name, task_type, estimated_hours, limit)
-    payload = {
-        "task": {"task_id": task_id, "task_name": task_name, "task_type": task_type, "estimated_hours": estimated_hours},
-        "recommendations": items,
-        "excluded_overloaded": [member for member in internal_member_load(project_id)["members"] if member["overloaded"]],
-        "weights": RECOMMEND_WEIGHTS,
-        "disclaimer": RECOMMEND_DISCLAIMER,
-        "generated_at": now_iso(),
-    }
-    persist_recommendation_record(project_id, task_id, task_name, generated_by, payload)
-    return payload
 
 
 def _risk_item(kind: str, level: str, message: str, rule: str, **extra: Any) -> dict[str, Any]:
@@ -233,4 +160,4 @@ def list_members_internal(conn, project_id: int) -> list[dict[str, Any]]:
         item = dict(row); item["skills"] = json.loads(item["skills"] or "[]"); result.append(item)
     return result
 
-__all__ = ['internal_member_load', 'internal_recommendations', 'recommendations', 'persist_recommendation_record', 'build_recommendation_payload', 'internal_project_risks', 'internal_project_report', '_week_bounds', 'internal_weekly_report', '_weekly_markdown', '_report_markdown', '_simple_pdf_bytes', 'internal_project_snapshot', 'list_members_internal', 'RECOMMEND_WEIGHTS', 'RECOMMEND_DISCLAIMER']
+__all__ = ['internal_member_load', 'internal_recommendations', 'recommendations', 'persist_recommendation_record', 'build_recommendation_payload', 'batch_recommendations', 'list_recommendation_history', 'decide_recommendation', 'internal_project_risks', 'internal_project_report', '_week_bounds', 'internal_weekly_report', '_weekly_markdown', '_report_markdown', '_simple_pdf_bytes', 'internal_project_snapshot', 'list_members_internal', 'RECOMMEND_WEIGHTS', 'RECOMMEND_DISCLAIMER']

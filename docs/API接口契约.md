@@ -1241,40 +1241,48 @@ Query 参数：
 | `task_type` | string | 否 | 任务类型 |
 | `estimated_hours` | number | 否 | 预计工时，默认 1 |
 | `limit` | integer | 否 | 候选人数，默认 3 |
+| `include_owner` | boolean | 否 | 默认 false，组长不进入候选 |
 
-成功响应：`200 OK`
+成功响应重点字段：
 
-```json
-{
-  "task": {
-    "task_id": 10,
-    "task_name": "完成项目 PPT",
-    "task_type": "汇报",
-    "estimated_hours": 4
-  },
-  "recommendations": [
-    {
-      "user_id": 4,
-      "name": "赵六",
-      "score": 88.5,
-      "reasons": {
-        "skill_match": 0.9,
-        "average_quality": 4.5,
-        "efficiency": 1.1,
-        "current_load": "1/2",
-        "summary": "赵六擅长文档和汇报，历史质量较高，当前负载较低。"
-      }
-    }
-  ],
-  "generated_at": "2026-08-25T10:00:00Z"
-}
-```
+- `recommendation_id`：本次生成记录 ID，采纳时使用
+- `recommendations[].dimensions`：技能/质量/效率/负载四维分数、证据、是否样本不足
+- `excluded`：未进入候选的成员及原因（`overloaded` / `owner_excluded` / `viewer`）
+- `excluded_overloaded`：兼容旧前端的超负载列表
+- `disclaimer`：固定为“推荐仅供参考，最终由组长决定。”
+- `source`：`rule` 或 `hybrid`；无 LLM Key 时走规则路径
 
 规则：
 
-- 推荐只基于项目内事实数据
-- 达到最大并发任务数的成员不进入候选列表
-- 前端必须展示“推荐仅供参考”
+- 默认只推荐 `member`；`viewer` 永不推荐；组长默认排除
+- 达到最大并发任务数的成员进入 `excluded`，不进候选
+- 高负载但未超上限仍可推荐，负载分降低并写明“负载偏高”
+- 无评价/无工时按中性分 0.5，理由写“按中性分”
+- 推荐只基于项目内事实，不公开排名，不自动指派
+
+### 9.1.1 批量生成未分配任务建议
+
+```http
+POST /api/projects/{project_id}/recommendations/batch
+```
+
+权限：`owner` 或 `member`。请求 `{"limit":3,"include_owner":false}`。成功返回每个未分配任务的 9.1 结果，不自动指派。
+
+### 9.1.2 推荐历史
+
+```http
+GET /api/projects/{project_id}/recommendations/history
+```
+
+权限：项目成员。可带 `task_id`。返回生成记录、状态、是否采纳、采纳了谁。
+
+### 9.1.3 采纳或手选负责人
+
+```http
+POST /api/projects/{project_id}/recommendations/{rec_id}/decide
+```
+
+权限：`owner` 或 `member`。请求 `{"user_id":2,"note":"采纳推荐"}`。成功后调用现有任务指派，并写入 `recommendation_events`。若人选不在推荐列表中，`action` 为 `manual`。
 
 ### 9.2 获取成员负载分析
 

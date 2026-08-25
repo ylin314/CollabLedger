@@ -39,10 +39,15 @@ def test_stage2_recommendation_load_risks_and_weekly(tmp_path, monkeypatch):
     rec = owner.get(f"/api/projects/{pid}/recommendations", params={"task_name": "新的后端任务", "task_type": "后端"}).json()
     names = [item["name"] for item in rec["recommendations"]]
     assert "前端同学" not in names
+    assert "组长" not in names
+    assert rec["recommendations"][0]["name"] == "后端同学"
     assert rec["weights"] == {"skill": 0.4, "quality": 0.3, "efficiency": 0.2, "load": 0.1}
     assert rec["disclaimer"]
     assert rec["recommendations"][0]["reasons"]["evidence"]
+    assert rec["recommendations"][0]["dimensions"]["quality"]["missing"] is False
     assert rec["excluded_overloaded"]
+    assert any(item["reason_code"] == "overloaded" for item in rec["excluded"])
+    assert rec["recommendation_id"]
 
     load = owner.get(f"/api/projects/{pid}/members/load").json()
     frontend_load = next(item for item in load["members"] if item["user_id"] == frontend_user["id"])
@@ -58,3 +63,15 @@ def test_stage2_recommendation_load_risks_and_weekly(tmp_path, monkeypatch):
     assert weekly["summary"]["tasks_total"] >= 3
     assert weekly["disclaimer"]
     assert weekly["source"]
+
+    unassigned = owner.get(f"/api/projects/{pid}/tasks", params={"status": "unassigned"}).json()["items"][0]
+    rec_task = owner.get(f"/api/projects/{pid}/recommendations", params={"task_id": unassigned["id"]}).json()
+    decided = owner.post(f"/api/projects/{pid}/recommendations/{rec_task['recommendation_id']}/decide", json={"user_id": backend_user["id"], "note": "采纳推荐"})
+    assert decided.status_code == 200
+    assigned = decided.json()["task"]
+    assert assigned["assignee_id"] == backend_user["id"]
+    history = owner.get(f"/api/projects/{pid}/recommendations/history").json()
+    assert history["items"]
+    assert any(item["status"] in {"accept", "manual"} for item in history["items"])
+
+

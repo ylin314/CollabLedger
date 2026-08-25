@@ -88,16 +88,19 @@ uvicorn backend.main:app --reload --port 8000
 
 项目根目录的 `.env` 是 Agent 的唯一配置入口。后端会自动读取它；Docker Compose 也会把同一组变量注入容器。`.env` 已加入 `.gitignore`，不会提交到 Git。
 
-当前 `.env` 使用 OpenAI Chat Completions 兼容协议（不使用 Responses API）：
+当前 `.env` 使用 OpenAI Chat Completions 兼容协议（不使用 Responses API）。完整模板见 `.env.example`：
 
 ```dotenv
 LLM_BASE_URL=https://aigw.saurlax.com/
 LLM_API_KEY=你的APIKey
 LLM_MODEL=deepseek-v4-flash
 LLM_CHAT_COMPLETIONS_URL=
+RECOMMEND_SKILL_MODE=llm
+RECOMMEND_USE_LLM_SKILL=true
+RECOMMEND_USE_LLM_REASON=true
 ```
 
-`LLM_CHAT_COMPLETIONS_URL` 留空时自动请求 `${LLM_BASE_URL}/v1/chat/completions`；也可以显式填写完整的 Chat Completions 地址。
+`LLM_CHAT_COMPLETIONS_URL` 留空时自动请求 `${LLM_BASE_URL}/v1/chat/completions`。未配置 Key 时，D1 推荐自动走规则路径，不阻断演示。
 
 ## 前端开发与生产预览
 
@@ -149,7 +152,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 | 阶段 | 目标 | 状态 | 说明 |
 | --- | --- | --- | --- |
 | 阶段一 基础功能 P0 | 注册登录、项目、邀请、任务、打卡、评价、看板 | 已完成 | ly/dkd/czc 已形成真实协作闭环 |
-| 阶段二 AI 功能 P1 | 推荐、负载、匹配度、风险、周报 | rxc 推进中 | 规则推荐已可演示；LLM 失败走规则兜底 |
+| 阶段二 AI 功能 P1 | 推荐、负载、匹配度、风险、周报 | rxc 推进中 | D1 已加深：语义匹配、四维拆开、排除原因、采纳留痕、批量建议；D2-D4 本轮冻结 |
 | 阶段三 贡献系统 P1 | 手动贡献 + 外部平台接入 | 部分完成 | 手动贡献/确认/争议已有；GitHub 等接入未做 |
 | 阶段四 长期协作 P2 | 历史项目、画像、跨项目授权 | 未开始 | 归档接口有雏形，画像页不要用假数据 |
 
@@ -175,10 +178,11 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 
 **rxc（D）AI / 数据分析 / 平台接入 / 质量（本轮）**
 
-- [x] D1：未分配任务推荐，权重 技能 40% / 质量 30% / 效率 20% / 负载 10%；超负载排除；理由可追溯；结果写入 `recommendations`
-- [x] D2：`/members/load` 与 `/risks`，覆盖延期、临近截止、无负责人、高负载
-- [x] D3：`/weekly-report` 基于任务、打卡、贡献；LLM 失败时用规则周报
-- [x] D4：Agent 只读项目事实，失败兜底，页面提示推荐仅供参考
+- [x] D1 加深：技能 40% / 质量 30% / 效率 20% / 负载 10%；仅 member 默认候选；超负载排除；无样本中性分 0.5；规则 + LLM 语义匹配/理由润色；四维证据；批量建议；采纳/手选留痕
+- [ ] D1 待联调：真实 LLM/Embedding Key 下的语义质量（不阻塞无 Key 演示）
+- [x] D2：`/members/load` 与 `/risks`（本轮冻结）
+- [x] D3：`/weekly-report`（本轮冻结）
+- [x] D4：Agent 只读项目事实（本轮冻结）
 - [ ] D5：GitHub / 飞书 / 腾讯文档接入（等 dkd 的 B6 稳定后做，不阻塞阶段二演示）
 - [ ] D6：长期画像（阶段四）
 - [ ] D7：完整联调与演示手册；当前仅保留少量核心测试
@@ -186,6 +190,9 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 阶段二接口：
 
 - `GET /api/projects/{id}/recommendations`
+- `POST /api/projects/{id}/recommendations/batch`
+- `GET /api/projects/{id}/recommendations/history`
+- `POST /api/projects/{id}/recommendations/{rec_id}/decide`
 - `GET /api/projects/{id}/members/load`
 - `GET /api/projects/{id}/risks`
 - `GET /api/projects/{id}/weekly-report`
@@ -207,6 +214,7 @@ npm run build
 ```text
 #/projects/{project_id}/overview
 #/projects/{project_id}/tasks
+#/projects/{project_id}/recommendations
 #/projects/{project_id}/contributions
 #/projects/{project_id}/report
 #/projects/{project_id}/agent

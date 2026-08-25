@@ -13,8 +13,8 @@ def test_complete_sqlalchemy_metadata_compiles_for_postgresql():
         lambda sql, *args, **kwargs: statements.append(str(sql.compile(dialect=engine.dialect))),
     )
     Base.metadata.create_all(engine)
-    assert len(Base.metadata.tables) == 22
-    assert {"audit_logs", "platform_connections", "agent_sessions", "recommendations"} <= set(Base.metadata.tables)
+    assert len(Base.metadata.tables) == 23
+    assert {"audit_logs", "platform_connections", "agent_sessions", "recommendations", "recommendation_events"} <= set(Base.metadata.tables)
     assert statements
 
 
@@ -28,7 +28,7 @@ def test_sqlalchemy_session_and_schema_status_on_sqlite(tmp_path, monkeypatch):
     with db.session_scope(database) as session:
         assert session.scalar(select(User.name).where(User.email == "sa@example.com")) == "SQLAlchemy"
     status = db.schema_status(database)
-    assert status["dialect"] == "sqlite" and len(status["tables"]) == 22
+    assert status["dialect"] == "sqlite" and len(status["tables"]) == 23
 
 
 def test_postgresql_compat_sql_translation():
