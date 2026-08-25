@@ -179,7 +179,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 **rxc（D）AI / 数据分析 / 平台接入 / 质量（本轮）**
 
 - [x] D1 加深：技能 40% / 质量 30% / 效率 20% / 负载 10%；仅 member 默认候选；超负载排除；无样本中性分 0.5；规则 + LLM 语义匹配/理由润色；四维证据；批量建议；采纳/手选留痕
-- [ ] D1 待联调：真实 LLM/Embedding Key 下的语义质量（不阻塞无 Key 演示）
+- [x] D1 本轮：技能族匹配（后端/前端/文档等同义词，不再只靠字面子串）、候选人对比解释、推荐历史中文状态、可重复演示种子 `scripts/seed_stage2_demo.py`
+- [ ] D1 待联调：真实 LLM/Embedding Key 下的语义质量（无 `.env` 时自动走规则路径，不阻塞演示）
 - [x] D2：`/members/load` 与 `/risks`（本轮冻结）
 - [x] D3：`/weekly-report`（本轮冻结）
 - [x] D4：Agent 只读项目事实（本轮冻结）
@@ -201,9 +202,10 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 本地验证：
 
 ```powershell
-python -m pytest -q backend/test_stage2.py backend/test_contract_p1.py backend/test_agent.py backend/test_stage1.py
-cd frontend
-npm run build
+python -m pytest -q backend/test_stage2.py
+python scripts/seed_stage2_demo.py  # 重置阶段二演示数据
+$env:COLLAB_DB="$PWD\stage2-demo.db"
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
 ## 前端路由

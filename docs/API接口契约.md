@@ -1246,7 +1246,10 @@ Query 参数：
 成功响应重点字段：
 
 - `recommendation_id`：本次生成记录 ID，采纳时使用
+- `comparison`：第一候选与第二候选的分差和关键维度对比，便于组长理解“为什么是他”
 - `recommendations[].dimensions`：技能/质量/效率/负载四维分数、证据、是否样本不足
+- `recommendations[].dimensions.skill.skill_families`：命中的技能族，如后端开发、前端开发、文档与答辩
+- `recommendations[].reasons.contrast`：第一候选的对比解释
 - `excluded`：未进入候选的成员及原因（`overloaded` / `owner_excluded` / `viewer`）
 - `excluded_overloaded`：兼容旧前端的超负载列表
 - `disclaimer`：固定为“推荐仅供参考，最终由组长决定。”
@@ -1255,6 +1258,7 @@ Query 参数：
 规则：
 
 - 默认只推荐 `member`；`viewer` 永不推荐；组长默认排除
+- 技能匹配使用同义词技能族 + 字面技能 + 历史任务类型；未配置 LLM Key 时仍可给出可解释匹配
 - 达到最大并发任务数的成员进入 `excluded`，不进候选
 - 高负载但未超上限仍可推荐，负载分降低并写明“负载偏高”
 - 无评价/无工时按中性分 0.5，理由写“按中性分”
@@ -1274,7 +1278,7 @@ POST /api/projects/{project_id}/recommendations/batch
 GET /api/projects/{project_id}/recommendations/history
 ```
 
-权限：项目成员。可带 `task_id`。返回生成记录、状态、是否采纳、采纳了谁。
+权限：项目成员。可带 `task_id`。返回生成记录、状态、是否采纳、采纳了谁；`status_label` 提供中文状态展示文案。
 
 ### 9.1.3 采纳或手选负责人
 

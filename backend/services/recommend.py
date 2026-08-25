@@ -15,6 +15,21 @@ from backend.core.context import *
 RECOMMEND_WEIGHTS = {"skill": 0.4, "quality": 0.3, "efficiency": 0.2, "load": 0.1}
 RECOMMEND_DISCLAIMER = "推荐仅供参考，最终由组长决定。"
 NEUTRAL_SCORE = 0.5
+SKILL_ONTOLOGY = [
+    {"id": "backend", "name": "后端开发", "member": ["后端", "python", "fastapi", "django", "flask", "java", "go", "node", "接口", "api", "鉴权", "服务端", "路由"], "task": ["后端", "接口", "api", "鉴权", "服务端", "路由", "schema", "rest", "登录"]},
+    {"id": "frontend", "name": "前端开发", "member": ["前端", "react", "vue", "css", "ui", "javascript", "typescript", "交互"], "task": ["前端", "页面", "交互", "css", "react", "vue", "ui", "登录页"]},
+    {"id": "database", "name": "数据库", "member": ["数据库", "sql", "sqlite", "postgres", "mysql", "表结构", "迁移"], "task": ["数据库", "表", "sql", "schema", "存储", "迁移"]},
+    {"id": "docs", "name": "文档与答辩", "member": ["文档", "答辩", "ppt", "写作", "markdown", "汇报"], "task": ["文档", "答辩", "ppt", "报告", "说明书", "汇报"]},
+    {"id": "test", "name": "测试", "member": ["测试", "pytest", "qa", "验收"], "task": ["测试", "验收", "用例"]},
+    {"id": "design", "name": "设计", "member": ["设计", "figma", "原型"], "task": ["设计", "原型", "视觉"]},
+]
+STATUS_LABELS = {
+    "generated": "已生成，待组长确认",
+    "accept": "已采纳推荐人选",
+    "accepted": "已采纳推荐人选",
+    "manual": "已手选其他人",
+    "assigned": "已完成指派",
+}
 
 def _env_bool(name: str, default: bool = True) -> bool:
     raw = os.getenv(name)
@@ -64,25 +79,54 @@ def _member_load(project_id: int) -> dict[str, Any]:
     return internal_member_load(project_id)
 
 
-def rule_skill(skills: list[str], history_types: list[str], history_titles: list[str], task_title: str, task_type: Optional[str]) -> tuple[float, list[str], list[str]]:
-    haystack = f"{task_type or ''} {task_title or ''}".lower()
-    matched = []
-    for skill in skills:
-        token = skill.lower()
-        if token and (token in haystack or haystack in token):
-            matched.append(skill)
-    type_hits = [item for item in history_types if task_type and str(item).lower() == str(task_type).lower()]
+def _normalize(text: str) -> str:
+    return (text or "").strip().lower()
+
+
+def _term_hits(blob: str, terms: list[str]) -> list[str]:
+    haystack = _normalize(blob)
+    hits: list[str] = []
+    for term in terms:
+        token = _normalize(term)
+        if token and token in haystack and term not in hits:
+            hits.append(term)
+    return hits
+
+
+def rule_skill(
+    skills: list[str],
+    history_types: list[str],
+    history_titles: list[str],
+    task_title: str,
+    task_type: Optional[str],
+    description: str = "",
+) -> tuple[float, list[str], list[str], list[dict[str, Any]]]:
+    task_blob = " ".join(part for part in (task_type, task_title, description) if part)
+    member_blob = " ".join(skills)
+    matched = [skill for skill in skills if _normalize(skill) and _normalize(skill) in _normalize(task_blob)]
+    families: list[dict[str, Any]] = []
+    for spec in SKILL_ONTOLOGY:
+        member_hits = _term_hits(member_blob, spec["member"])
+        task_hits = _term_hits(task_blob, spec["task"])
+        if member_hits and task_hits:
+            families.append({"id": spec["id"], "name": spec["name"], "member_hits": member_hits, "task_hits": task_hits})
+    type_hits = [item for item in history_types if task_type and _normalize(str(item)) == _normalize(task_type)]
+    title_hits = [title for title in history_titles if task_type and _normalize(task_type) in _normalize(title)]
     score = 0.0
+    if families:
+        score += min(0.75, 0.5 + 0.15 * (len(families) - 1))
     if matched:
-        score += 0.7
+        score += 0.2
     if type_hits:
-        score += 0.25
-    elif any(task_type and str(task_type).lower() in str(title).lower() for title in history_titles):
-        score += 0.15
+        score += 0.2
+    elif title_hits:
+        score += 0.12
         type_hits = [task_type] if task_type else []
-    if not matched and type_hits:
+    if not families and not matched and type_hits:
         score = max(score, 0.45)
-    return _clip(score), matched, type_hits
+    if not families and not matched and not type_hits:
+        score = 0.08 if skills else 0.0
+    return _clip(score), matched, type_hits, families
 
 def _quality(conn, project_id: int, user_id: int) -> tuple[float, int, bool, float]:
     row = conn.execute(
@@ -352,7 +396,14 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
         ratio = current / maximum
         load_score = _clip(1 - ratio)
         load_high = (load_item.get("load_level") == "high") or ratio > 0.8
-        rule_score, matched, type_hits = rule_skill(profile["skills"], profile["history_types"], profile["history_titles"], task.get("title") or "", task.get("task_type"))
+        rule_score, matched, type_hits, families = rule_skill(
+            profile["skills"],
+            profile["history_types"],
+            profile["history_titles"],
+            task.get("title") or "",
+            task.get("task_type"),
+            task.get("description") or "",
+        )
         ai_score = ai_scores.get(profile["id"])
         if ai_score is None:
             skill_score, local_skill_source = rule_score, "rule"
@@ -361,8 +412,10 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
             local_skill_source = skill_source
         quality_score, quality_samples, quality_missing, quality_raw = _quality(conn, project_id, profile["id"])
         efficiency_score, efficiency_samples, efficiency_missing, efficiency_raw = _efficiency(conn, project_id, profile["id"])
+        family_names = [item["name"] for item in families]
         skill_note = (
-            f"技能命中 {('、'.join(matched) if matched else '无直接命中')}"
+            f"技能族命中 {('、'.join(family_names) if family_names else '无')}"
+            + (f"；字面技能 {('、'.join(matched))}" if matched else "")
             + (f"；历史同类任务 {('、'.join(type_hits))}" if type_hits else "")
             + (f"；{ai_notes.get(profile['id'])}" if ai_notes.get(profile["id"]) else "")
         )
@@ -373,8 +426,9 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
             "skill": _dimension(skill_score, RECOMMEND_WEIGHTS["skill"], skill_note, [
                 f"成员技能：{('、'.join(profile['skills']) if profile['skills'] else '未填写')}",
                 f"任务类型/标题：{task.get('task_type') or task.get('title')}",
+                f"技能族：{('、'.join(family_names) if family_names else '未命中')}",
                 f"规则匹配分 {round(rule_score, 2)}" + (f"，AI 技能分 {round(ai_score, 2)}" if ai_score is not None else "，本次未使用 AI 技能分"),
-            ], extra={"source": local_skill_source, "matched_skills": matched}),
+            ], extra={"source": local_skill_source, "matched_skills": matched, "skill_families": family_names}),
             "quality": _dimension(quality_score, RECOMMEND_WEIGHTS["quality"], quality_note, [quality_note], samples=quality_samples, missing=quality_missing, extra={"average_quality": quality_raw}),
             "efficiency": _dimension(efficiency_score, RECOMMEND_WEIGHTS["efficiency"], efficiency_note, [efficiency_note], samples=efficiency_samples, missing=efficiency_missing, extra={"efficiency": efficiency_raw}),
             "load": _dimension(load_score, RECOMMEND_WEIGHTS["load"], load_note, [f"进行中占用 {current} / 上限 {maximum}", load_note], extra={"current_load": f"{current}/{maximum}", "load_level": load_item.get("load_level"), "high": load_high}),
@@ -406,6 +460,32 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
     conn.close()
     items.sort(key=lambda item: (-item["score"], item["user_id"]))
     ranked = items[: max(1, limit)] if items else []
+    comparison = None
+    if len(ranked) >= 2:
+        leader, runner = ranked[0], ranked[1]
+        delta = round(leader["score"] - runner["score"], 1)
+        comparison = {
+            "leader_user_id": leader["user_id"],
+            "leader_name": leader["name"],
+            "runner_user_id": runner["user_id"],
+            "runner_name": runner["name"],
+            "score_gap": delta,
+            "summary": (
+                f"{leader['name']}比{runner['name']}高 {delta} 分，主要因为技能 {leader['dimensions']['skill']['score']:.2f} vs {runner['dimensions']['skill']['score']:.2f}，"
+                f"质量 {leader['dimensions']['quality']['score']:.2f} vs {runner['dimensions']['quality']['score']:.2f}。"
+            ),
+        }
+        ranked[0]["reasons"]["contrast"] = comparison["summary"]
+    elif ranked:
+        comparison = {
+            "leader_user_id": ranked[0]["user_id"],
+            "leader_name": ranked[0]["name"],
+            "runner_user_id": None,
+            "runner_name": None,
+            "score_gap": None,
+            "summary": f"当前只有一名可推荐成员：{ranked[0]['name']}。组长和超负载成员已排除。",
+        }
+        ranked[0]["reasons"]["contrast"] = comparison["summary"]
     if ranked:
         polished, reason_source, reason_error = llm_reasons(task, ranked, cfg)
         for item in ranked:
@@ -416,6 +496,7 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
         reason_source, reason_error = "rule", None
     return {
         "items": ranked,
+        "comparison": comparison,
         "excluded": excluded,
         "skill_source": skill_source if any(item["source"] != "rule" for item in ranked) else "rule",
         "reason_source": reason_source,
@@ -463,6 +544,7 @@ def build_recommendation_payload(
     payload = {
         "task": {"task_id": task_id, "task_name": task_name, "task_type": task_type, "estimated_hours": estimated_hours},
         "recommendations": scored["items"],
+        "comparison": scored.get("comparison"),
         "excluded": scored["excluded"],
         "excluded_overloaded": [item for item in scored["excluded"] if item.get("reason_code") == "overloaded"],
         "weights": RECOMMEND_WEIGHTS,
@@ -541,6 +623,7 @@ def list_recommendation_history(project_id: int, task_id: Optional[int] = None, 
             "task_id": row["task_id"],
             "task_name": row["task_name"],
             "status": row["status"] if "status" in keys else payload.get("status") or "generated",
+            "status_label": STATUS_LABELS.get(row["status"] if "status" in keys else payload.get("status") or "generated", row["status"] if "status" in keys else "generated"),
             "source": row["source"] if "source" in keys else payload.get("source"),
             "mode": row["mode"] if "mode" in keys else payload.get("mode") or "single",
             "accepted_user_id": row["accepted_user_id"] if "accepted_user_id" in keys else None,

@@ -21,13 +21,18 @@ def test_stage2_recommendation_load_risks_and_weekly(tmp_path, monkeypatch):
     _account(owner, "组长", "owner-s2@example.com")
     backend_user = _account(backend_dev, "后端同学", "backend-s2@example.com")
     frontend_user = _account(frontend_dev, "前端同学", "frontend-s2@example.com")
+    docs_dev = _client()
+    docs_user = _account(docs_dev, "文档同学", "docs-s2@example.com")
     pid = owner.post("/api/projects", json={"name": "阶段二项目"}).json()["id"]
     backend_code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
     frontend_code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
+    docs_code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
     assert backend_dev.post(f"/api/invitations/{backend_code}/accept").status_code == 200
     assert frontend_dev.post(f"/api/invitations/{frontend_code}/accept").status_code == 200
+    assert docs_dev.post(f"/api/invitations/{docs_code}/accept").status_code == 200
     assert backend_dev.patch("/api/users/me", json={"skills": ["后端", "Python"], "max_concurrent_tasks": 3}).status_code == 200
     assert frontend_dev.patch("/api/users/me", json={"skills": ["前端"], "max_concurrent_tasks": 1}).status_code == 200
+    assert docs_dev.patch("/api/users/me", json={"skills": ["文档", "答辩"], "max_concurrent_tasks": 3}).status_code == 200
 
     busy = owner.post(f"/api/projects/{pid}/tasks", json={"title": "占满前端容量", "assignee_id": frontend_user["id"], "task_type": "前端"}).json()
     owner.post(f"/api/projects/{pid}/tasks", json={"title": "未分配后端接口", "task_type": "后端", "due_date": "2020-01-01"})
@@ -36,7 +41,7 @@ def test_stage2_recommendation_load_risks_and_weekly(tmp_path, monkeypatch):
     backend_dev.post(f"/api/tasks/{done['id']}/complete", json={"actual_hours": 3})
     owner.post(f"/api/tasks/{done['id']}/review", json={"quality": 5, "comment": "质量高"})
 
-    rec = owner.get(f"/api/projects/{pid}/recommendations", params={"task_name": "新的后端任务", "task_type": "后端"}).json()
+    rec = owner.get(f"/api/projects/{pid}/recommendations", params={"task_name": "补齐任务推荐相关后端接口", "task_type": "后端"}).json()
     names = [item["name"] for item in rec["recommendations"]]
     assert "前端同学" not in names
     assert "组长" not in names
@@ -45,6 +50,8 @@ def test_stage2_recommendation_load_risks_and_weekly(tmp_path, monkeypatch):
     assert rec["disclaimer"]
     assert rec["recommendations"][0]["reasons"]["evidence"]
     assert rec["recommendations"][0]["dimensions"]["quality"]["missing"] is False
+    assert rec["recommendations"][0]["dimensions"]["skill"]["score"] > 0.5
+    assert rec["comparison"]["leader_name"] == "后端同学"
     assert rec["excluded_overloaded"]
     assert any(item["reason_code"] == "overloaded" for item in rec["excluded"])
     assert rec["recommendation_id"]
