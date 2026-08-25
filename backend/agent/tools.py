@@ -10,12 +10,12 @@ class AgentTools:
     """
 
     def snapshot(self, project_id: int) -> dict[str, Any]:
-        from backend.main import internal_project_snapshot
+        from backend.services.analytics import internal_project_snapshot
 
         return internal_project_snapshot(project_id)
 
     def recommend(self, project_id: int, task_name: str, task_type: str | None = None, estimated_hours: float = 1) -> dict[str, Any]:
-        from backend.main import internal_recommendations
+        from backend.services.analytics import internal_recommendations
 
         return {
             "task_name": task_name,

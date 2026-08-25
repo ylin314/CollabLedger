@@ -6,6 +6,21 @@ from typing import Any, Optional
 
 from backend.core.context import *
 
+RECOMMEND_WEIGHTS = {"skill": 0.4, "quality": 0.3, "efficiency": 0.2, "load": 0.1}
+RECOMMEND_DISCLAIMER = "推荐仅供参考，最终由组长决定。"
+LOAD_LABELS = {"low": "低负载", "normal": "正常", "high": "高负载"}
+
+
+def _skill_match(skills: list[str], task_name: str, task_type: Optional[str]) -> tuple[float, list[str]]:
+    haystack = f"{task_type or ''} {task_name}".lower()
+    matched = []
+    for skill in skills:
+        token = str(skill).strip().lower()
+        if token and (token in haystack or haystack in token):
+            matched.append(skill)
+    return (1.0 if matched else 0.0), matched
+
+
 def internal_member_load(project_id: int) -> dict[str, Any]:
     conn = db(); ensure_project(conn, project_id)
     members = conn.execute("SELECT u.id user_id,u.name,u.max_concurrent_tasks FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? ORDER BY u.id", (project_id,)).fetchall()
@@ -14,28 +29,95 @@ def internal_member_load(project_id: int) -> dict[str, Any]:
         tasks = conn.execute("SELECT id,COALESCE(estimated_hours,0) estimated_hours FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL AND status IN ('assigned','in_progress','paused','overdue')", (project_id, member["user_id"])).fetchall()
         current = len(tasks); maximum = max(1, member["max_concurrent_tasks"]); ratio = current / maximum
         level = "low" if ratio < .5 else ("normal" if ratio <= .8 else "high")
-        result.append({"user_id": member["user_id"], "name": member["name"], "current_task_count": current, "max_concurrent_tasks": maximum, "remaining_capacity": max(0, maximum-current), "load_ratio": round(ratio, 2), "load_level": level, "estimated_hours": round(sum(task["estimated_hours"] for task in tasks), 2), "active_task_ids": [task["id"] for task in tasks]})
-    conn.close(); return {"project_id": project_id, "generated_at": now_iso(), "members": result}
+        result.append({
+            "user_id": member["user_id"], "name": member["name"], "current_task_count": current, "max_concurrent_tasks": maximum,
+            "remaining_capacity": max(0, maximum - current), "load_ratio": round(ratio, 2), "load_level": level,
+            "load_label": LOAD_LABELS[level], "overloaded": current >= maximum,
+            "estimated_hours": round(sum(task["estimated_hours"] for task in tasks), 2),
+            "active_task_ids": [task["id"] for task in tasks],
+            "rule": "进行中 / 已分配 / 暂停 / 延期任务计入当前负载；达到最大并发任务数视为超负载",
+        })
+    conn.close()
+    return {"project_id": project_id, "generated_at": now_iso(), "rule": "负载 = 当前占用任务数 / 最大并发任务数；<0.5 低负载，0.5-0.8 正常，>0.8 高负载", "members": result}
 
 
 def internal_recommendations(project_id: int, task_name: str, task_type: Optional[str], estimated_hours: float = 1, limit: int = 3) -> list[dict[str, Any]]:
     load = internal_member_load(project_id); conn = db(); result = []
     for member in load["members"]:
-        if member["current_task_count"] >= member["max_concurrent_tasks"]: continue
-        row = conn.execute("SELECT skills FROM users WHERE id=?", (member["user_id"],)).fetchone(); skills = json.loads(row["skills"] or "[]")
-        needle = (task_type or task_name).lower(); skill_match = max([1.0 if skill.lower() in needle or needle in skill.lower() else 0.0 for skill in skills] or [0.0])
-        quality = conn.execute("SELECT AVG(COALESCE(r.quality,t.quality)) q FROM tasks t LEFT JOIN task_reviews r ON r.task_id=t.id WHERE t.project_id=? AND t.assignee_id=? AND (r.quality IS NOT NULL OR t.quality IS NOT NULL)", (project_id, member["user_id"])).fetchone()["q"] or 0
+        if member["current_task_count"] >= member["max_concurrent_tasks"]:
+            continue
+        row = conn.execute("SELECT skills FROM users WHERE id=?", (member["user_id"],)).fetchone()
+        skills = json.loads(row["skills"] or "[]")
+        skill_match, matched_skills = _skill_match(skills, task_name, task_type)
+        quality_row = conn.execute(
+            "SELECT AVG(COALESCE(r.quality,t.quality)) q, COUNT(COALESCE(r.quality,t.quality)) n FROM tasks t LEFT JOIN task_reviews r ON r.task_id=t.id WHERE t.project_id=? AND t.assignee_id=? AND (r.quality IS NOT NULL OR t.quality IS NOT NULL)",
+            (project_id, member["user_id"]),
+        ).fetchone()
+        quality = quality_row["q"] or 0
+        quality_samples = quality_row["n"] or 0
         ratios = [r["ratio"] for r in conn.execute("SELECT CASE WHEN actual_hours>0 THEN estimated_hours/actual_hours END ratio FROM tasks WHERE project_id=? AND assignee_id=? AND status='completed' AND estimated_hours IS NOT NULL AND actual_hours IS NOT NULL", (project_id, member["user_id"])).fetchall() if r["ratio"] is not None]
-        efficiency = sum(ratios)/len(ratios) if ratios else 1.0
+        efficiency = sum(ratios) / len(ratios) if ratios else 1.0
         capacity_score = 1 - member["load_ratio"]
-        score = 100 * (.4*skill_match + .25*(quality/5) + .2*min(1.2, efficiency)/1.2 + .15*capacity_score)
-        summary = f"技能匹配度{round(skill_match*100)}%，历史平均质量{round(quality,1) if quality else '暂无'}，当前负载{member['current_task_count']}/{member['max_concurrent_tasks']}。"
-        result.append({"user_id": member["user_id"], "name": member["name"], "score": round(score, 1), "reasons": {"skill_match": round(skill_match, 2), "average_quality": round(quality, 2), "efficiency": round(efficiency, 2), "current_load": f"{member['current_task_count']}/{member['max_concurrent_tasks']}", "summary": summary}})
-    conn.close(); return sorted(result, key=lambda item: item["score"], reverse=True)[:limit]
+        score = 100 * (
+            RECOMMEND_WEIGHTS["skill"] * skill_match
+            + RECOMMEND_WEIGHTS["quality"] * (quality / 5)
+            + RECOMMEND_WEIGHTS["efficiency"] * min(1.2, efficiency) / 1.2
+            + RECOMMEND_WEIGHTS["load"] * capacity_score
+        )
+        quality_text = f"{round(quality, 1)}/5（{quality_samples} 条评价）" if quality_samples else "暂无质量评价，该项按 0 计"
+        summary = (
+            f"技能匹配度 {round(skill_match * 100)}%"
+            f"{('（命中：' + '、'.join(matched_skills) + '）') if matched_skills else ''}，"
+            f"历史质量 {quality_text}，效率 {round(efficiency, 2)}，当前负载 {member['current_task_count']}/{member['max_concurrent_tasks']}。"
+        )
+        result.append({
+            "user_id": member["user_id"], "name": member["name"], "score": round(score, 1), "weights": RECOMMEND_WEIGHTS,
+            "reasons": {
+                "skill_match": round(skill_match, 2), "matched_skills": matched_skills, "average_quality": round(quality, 2),
+                "quality_samples": quality_samples, "efficiency": round(efficiency, 2), "efficiency_samples": len(ratios),
+                "current_load": f"{member['current_task_count']}/{member['max_concurrent_tasks']}", "load_level": member["load_level"],
+                "summary": summary,
+                "evidence": [
+                    f"技能：成员技能 {skills or ['未填写']}，任务类型/标题为「{task_type or task_name}」",
+                    f"质量：已完成任务平均分 {quality_text}",
+                    f"效率：预计/实际工时比 {round(efficiency, 2)}（{len(ratios)} 条完成记录）",
+                    f"负载：当前占用 {member['current_task_count']} / 上限 {member['max_concurrent_tasks']}",
+                ],
+            },
+        })
+    conn.close()
+    return sorted(result, key=lambda item: item["score"], reverse=True)[:limit]
 
 
 def recommendations(project_id: int, task_name: str, task_type: Optional[str], estimated_hours: float = 1) -> list[dict[str, Any]]:
     return internal_recommendations(project_id, task_name, task_type, estimated_hours)
+
+
+def persist_recommendation_record(project_id: int, task_id: Optional[int], task_name: Optional[str], generated_by: Optional[int], payload: dict[str, Any]) -> None:
+    conn = db()
+    conn.execute(
+        "INSERT INTO recommendations(project_id,task_id,task_name,generated_by,payload,created_at) VALUES (?,?,?,?,?,?)",
+        (project_id, task_id, task_name, generated_by, json.dumps(payload, ensure_ascii=False), now_iso()),
+    )
+    conn.commit(); conn.close()
+
+
+def build_recommendation_payload(project_id: int, task_id: Optional[int], task_name: str, task_type: Optional[str], estimated_hours: float, limit: int, generated_by: Optional[int] = None) -> dict[str, Any]:
+    items = internal_recommendations(project_id, task_name, task_type, estimated_hours, limit)
+    payload = {
+        "task": {"task_id": task_id, "task_name": task_name, "task_type": task_type, "estimated_hours": estimated_hours},
+        "recommendations": items,
+        "excluded_overloaded": [member for member in internal_member_load(project_id)["members"] if member["overloaded"]],
+        "weights": RECOMMEND_WEIGHTS,
+        "disclaimer": RECOMMEND_DISCLAIMER,
+        "generated_at": now_iso(),
+    }
+    persist_recommendation_record(project_id, task_id, task_name, generated_by, payload)
+    return payload
+
+
+def _risk_item(kind: str, level: str, message: str, rule: str, **extra: Any) -> dict[str, Any]:
+    return {"type": kind, "level": level, "message": message, "rule": rule, **extra}
 
 
 def internal_project_risks(project_id: int) -> dict[str, Any]:
@@ -43,19 +125,23 @@ def internal_project_risks(project_id: int) -> dict[str, Any]:
     tasks = conn.execute("SELECT * FROM tasks WHERE project_id=? AND deleted_at IS NULL AND status!='completed'", (project_id,)).fetchall()
     for task in tasks:
         if task["status"] in ("overdue", "unfinished") or (task["due_date"] and task["due_date"] < today.isoformat()):
-            risks.append({"type": "overdue_task", "level": "high", "message": f"任务「{task['title']}」已延期", "task_id": task["id"], "due_date": task["due_date"]})
+            risks.append(_risk_item("overdue_task", "high", f"任务「{task['title']}」已延期", "状态为延期/未完成，或截止日期早于今天", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
         elif task["due_date"] and task["due_date"] <= soon.isoformat():
-            risks.append({"type": "upcoming_deadline", "level": "medium", "message": f"任务「{task['title']}」临近截止", "task_id": task["id"], "due_date": task["due_date"]})
+            risks.append(_risk_item("upcoming_deadline", "medium", f"任务「{task['title']}」临近截止", "截止日期在未来 3 天内", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
         if task["assignee_id"] is None:
-            risks.append({"type": "unassigned_task", "level": "medium", "message": f"任务「{task['title']}」尚未分配", "task_id": task["id"], "due_date": task["due_date"]})
+            risks.append(_risk_item("unassigned_task", "medium", f"任务「{task['title']}」尚未分配", "任务没有负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
     for member in internal_member_load(project_id)["members"]:
-        if member["load_level"] == "high": risks.append({"type": "high_member_load", "level": "medium", "message": f"{member['name']}当前负载为 {member['current_task_count']}/{member['max_concurrent_tasks']}", "user_id": member["user_id"], "current_task_count": member["current_task_count"], "max_concurrent_tasks": member["max_concurrent_tasks"]})
+        if member["load_level"] == "high":
+            risks.append(_risk_item("high_member_load", "medium", f"{member['name']}当前负载为 {member['current_task_count']}/{member['max_concurrent_tasks']}", "当前占用任务数 / 最大并发任务数 > 0.8", user_id=member["user_id"], current_task_count=member["current_task_count"], max_concurrent_tasks=member["max_concurrent_tasks"]))
     last = conn.execute("SELECT MAX(at) at FROM task_logs l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=?", (project_id,)).fetchone()["at"]
     if last:
         try:
-            if datetime.fromisoformat(last.replace("Z", "+00:00")) < datetime.now(timezone.utc)-timedelta(days=7): risks.append({"type": "no_recent_activity", "level": "low", "message": "项目最近 7 天没有任务活动"})
-        except ValueError: pass
-    conn.close(); return {"project_id": project_id, "generated_at": now_iso(), "count": len(risks), "risks": risks}
+            if datetime.fromisoformat(last.replace("Z", "+00:00")) < datetime.now(timezone.utc) - timedelta(days=7):
+                risks.append(_risk_item("no_recent_activity", "low", "项目最近 7 天没有任务活动", "最近一次任务日志早于 7 天"))
+        except ValueError:
+            pass
+    conn.close()
+    return {"project_id": project_id, "generated_at": now_iso(), "count": len(risks), "risks": risks, "rule": "覆盖延期、临近截止、无负责人和高负载四类风险"}
 
 
 def internal_project_report(project_id: int) -> dict[str, Any]:
@@ -84,27 +170,34 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
     contributions = conn.execute("SELECT COUNT(*) n FROM contributions WHERE project_id=? AND deleted_at IS NULL AND substr(occurred_at,1,10) BETWEEN ? AND ?", (project_id, start_s, end_s)).fetchone()["n"]
     task_hours = conn.execute("SELECT COALESCE(SUM(actual_hours),0) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND substr(updated_at,1,10) BETWEEN ? AND ?", (project_id, start_s, end_s)).fetchone()["n"]
     highlights = [row["title"] for row in conn.execute("SELECT title FROM tasks WHERE project_id=? AND deleted_at IS NULL AND status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ? ORDER BY updated_at DESC LIMIT 5", (project_id, start_s, end_s)).fetchall()]
-    risk_data = internal_project_risks(project_id); risks = [item["message"] for item in risk_data["risks"][:5]]
-    next_actions: list[str] = []
-    if any(item["type"] == "unassigned_task" for item in risk_data["risks"]): next_actions.append("优先分配未完成任务")
-    if any(item["type"] == "overdue_task" for item in risk_data["risks"]): next_actions.append("为延期任务调整排期")
-    if not next_actions: next_actions.append("按当前计划继续推进并及时打卡")
+    member_rows = conn.execute("SELECT u.id,u.name FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? ORDER BY u.id", (project_id,)).fetchall()
     members = []
-    rows = conn.execute("SELECT u.id,u.name FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? ORDER BY u.id", (project_id,)).fetchall()
-    for member in rows:
+    for member in member_rows:
         ms = conn.execute("""SELECT SUM(CASE WHEN status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ? THEN 1 ELSE 0 END) completed_tasks,SUM(CASE WHEN status IN ('assigned','in_progress','paused','overdue') THEN 1 ELSE 0 END) active_tasks,COALESCE(SUM(CASE WHEN substr(updated_at,1,10) BETWEEN ? AND ? THEN actual_hours ELSE 0 END),0) hours FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL""", (start_s, end_s, start_s, end_s, project_id, member["id"])).fetchone()
         ci = conn.execute("SELECT COUNT(*) n,COALESCE(SUM(hours),0) hours FROM task_checkins WHERE project_id=? AND user_id=? AND substr(created_at,1,10) BETWEEN ? AND ?", (project_id, member["id"], start_s, end_s)).fetchone()
         members.append({"user_id": member["id"], "name": member["name"], "completed_tasks": ms["completed_tasks"] or 0, "active_tasks": ms["active_tasks"] or 0, "checkin_count": ci["n"], "actual_hours": round((ms["hours"] or 0) + (ci["hours"] or 0), 2)})
     conn.close()
-    return {"project_id": project_id, "project_name": project["name"], "period": {"start_date": start_s, "end_date": end_s}, "summary": {"tasks_total": total, "tasks_completed": completed, "tasks_in_progress": in_progress, "tasks_overdue": overdue, "checkin_count": checkins["n"], "contribution_count": contributions, "actual_hours": round((task_hours or 0) + (checkins["hours"] or 0), 2)}, "highlights": highlights, "risks": risks, "next_actions": next_actions, "members": members, "generated_at": now_iso()}
+    risk_data = internal_project_risks(project_id)
+    risks = [item["message"] for item in risk_data["risks"][:5]]
+    next_actions: list[str] = []
+    if any(item["type"] == "unassigned_task" for item in risk_data["risks"]): next_actions.append("优先分配未分配任务")
+    if any(item["type"] == "overdue_task" for item in risk_data["risks"]): next_actions.append("为延期任务调整排期")
+    if not next_actions: next_actions.append("按当前计划继续推进并及时打卡")
+    return {
+        "project_id": project_id, "project_name": project["name"], "period": {"start_date": start_s, "end_date": end_s},
+        "summary": {"tasks_total": total, "tasks_completed": completed, "tasks_in_progress": in_progress, "tasks_overdue": overdue, "checkin_count": checkins["n"], "contribution_count": contributions, "actual_hours": round((task_hours or 0) + (checkins["hours"] or 0), 2)},
+        "highlights": highlights, "risks": risks, "next_actions": next_actions, "members": members,
+        "source": "tasks + task_checkins + contributions + current risks", "generated_at": now_iso(),
+        "disclaimer": "周报只汇总已有项目事实，不虚构完成情况。",
+    }
 
 
 def _weekly_markdown(data: dict[str, Any]) -> str:
     summary = data["summary"]
     lines = [f"# {data['project_name']} 周报", "", f"统计周期：{data['period']['start_date']} 至 {data['period']['end_date']}", "", "## 概览", f"- 任务总数：{summary['tasks_total']}", f"- 本周完成：{summary['tasks_completed']}", f"- 进行中：{summary['tasks_in_progress']}", f"- 延期：{summary['tasks_overdue']}", f"- 打卡次数：{summary['checkin_count']}", f"- 实际工时：{summary['actual_hours']}", "", "## 完成亮点"]
     lines.extend([f"- {item}" for item in data["highlights"]] or ["- 暂无已完成任务"])
-    lines.extend(["", "## 风险", *([f"- {item}" for item in data["risks"]] or ["- 暂无明显风险"]), "", "## 下一步", *[f"- {item}" for item in data["next_actions"]], "", f"生成时间：{data['generated_at']}"])
-    return "\n".join(lines)
+    lines.extend(["", "## 风险", *([f"- {item}" for item in data["risks"]] or ["- 暂无明显风险"]), "", "## 下一步", *[f"- {item}" for item in data["next_actions"]], "", data.get("disclaimer") or "", f"生成时间：{data['generated_at']}"])
+    return "\n".join(line for line in lines if line is not None)
 
 
 def _report_markdown(data: dict[str, Any]) -> str:
@@ -130,13 +223,14 @@ def internal_project_snapshot(project_id: int) -> dict[str, Any]:
     conn = db(); project = ensure_project(conn, project_id); detail = _project_detail(conn, project, None)
     members = list_members_internal(conn, project_id)
     tasks = [as_task(row) for row in conn.execute("SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE t.project_id=? AND t.deleted_at IS NULL ORDER BY t.id", (project_id,)).fetchall()]
-    conn.close(); return {"project": detail, "members": members, "tasks": tasks, "report": internal_project_report(project_id), "risks": internal_project_risks(project_id)}
+    conn.close()
+    return {"project": detail, "members": members, "tasks": tasks, "report": internal_project_report(project_id), "risks": internal_project_risks(project_id), "load": internal_member_load(project_id)}
 
 
-def list_members_internal(conn: sqlite3.Connection, project_id: int) -> list[dict[str, Any]]:
+def list_members_internal(conn, project_id: int) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT m.user_id,u.name,m.role,u.skills,u.max_concurrent_tasks,u.status,m.joined_at FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY m.joined_at", (project_id,)).fetchall(); result = []
     for row in rows:
         item = dict(row); item["skills"] = json.loads(item["skills"] or "[]"); result.append(item)
     return result
 
-__all__ = ['internal_member_load', 'internal_recommendations', 'recommendations', 'internal_project_risks', 'internal_project_report', '_week_bounds', 'internal_weekly_report', '_weekly_markdown', '_report_markdown', '_simple_pdf_bytes', 'internal_project_snapshot', 'list_members_internal']
+__all__ = ['internal_member_load', 'internal_recommendations', 'recommendations', 'persist_recommendation_record', 'build_recommendation_payload', 'internal_project_risks', 'internal_project_report', '_week_bounds', 'internal_weekly_report', '_weekly_markdown', '_report_markdown', '_simple_pdf_bytes', 'internal_project_snapshot', 'list_members_internal', 'RECOMMEND_WEIGHTS', 'RECOMMEND_DISCLAIMER']

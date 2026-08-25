@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-import json
-import os
-import re
-import secrets
-import sqlite3
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Query, Request, Response
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import PlainTextResponse
 
-from backend.auth import COOKIE_NAME, create_session, hash_password, iso_utc, revoke_session, verify_password
 from backend.core.context import *
 from backend.schemas import *
+from backend.services.analytics import *
 
 router = APIRouter()
-from backend.services.analytics import *
+
 
 @router.get("/api/projects/{project_id}/members/load")
 def members_load(project_id: int, request: Request) -> dict[str, Any]:
@@ -28,15 +23,15 @@ def get_recommendations(
     project_id: int, request: Request, task_id: Optional[int] = None, task_name: Optional[str] = None,
     task_type: Optional[str] = None, estimated_hours: float = Query(default=1, ge=0), limit: int = Query(default=3, ge=1, le=20),
 ) -> dict[str, Any]:
-    conn = db(); ensure_project_access(conn, project_id, request)
+    conn = db(); _, user, _ = ensure_project_access(conn, project_id, request)
     if (task_id is None) == (not task_name): conn.close(); fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "task_id", "message": "task_id 与 task_name 必须且只能提供一个"}])
     if task_id is not None:
         task = conn.execute("SELECT * FROM tasks WHERE id=? AND project_id=? AND deleted_at IS NULL", (task_id, project_id)).fetchone()
         if not task: conn.close(); fail(404, "NOT_FOUND", "任务不存在")
         task_name = task["title"]; task_type = task["task_type"]; estimated_hours = task["estimated_hours"] if task["estimated_hours"] is not None else estimated_hours
+    generated_by = user["id"] if user is not None else None
     conn.close()
-    task_obj = {"task_id": task_id, "task_name": task_name, "task_type": task_type, "estimated_hours": estimated_hours}
-    return {"task": task_obj, "recommendations": internal_recommendations(project_id, task_name or "", task_type, estimated_hours, limit), "generated_at": now_iso()}
+    return build_recommendation_payload(project_id, task_id, task_name or "", task_type, estimated_hours, limit, generated_by)
 
 
 @router.get("/api/projects/{project_id}/risks")

@@ -120,7 +120,7 @@ npm run dev
 - `/api/projects/{id}/recommendations`：基于技能、质量、效率和负载的任务推荐
 - `/api/projects/{id}/report`、`/api/projects/{id}/agent`：贡献报告与轻量协作 Agent
 
-前端在后端 API 不可用时会自动切换到内置演示数据，便于直接体验界面；恢复 API 后，创建任务、任务生命周期、贡献记录和推荐会写入 SQLite。
+当前前端不再使用内置演示数据伪装成功；API 失败会直接提示错误。任务、贡献、推荐、负载、风险和周报均写入 SQLite。
 
 首次使用时，如果数据库中没有项目，打开系统会直接显示“创建你的第一个项目”页面。填写项目名称、类型、周期和组长信息后，系统会先创建用户，再创建真实项目，之后所有任务和 Agent 对话都会使用该项目，不再使用演示项目。
 
@@ -142,44 +142,65 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 
 可通过 `GET /api/agent/config` 查看脱敏后的 URL、模型和配置状态；完整 API Key 永远不会由接口返回。
 
-## 阶段一功能（已补全）
+## 当前阶段与角色 TODO
 
-当前版本已经补齐路线图阶段一的真实协作闭环：
+更新时间：2026-08-25。分支约定：`main` 只合可运行代码；D 当前开发分支为 `dev_D`。
 
-- 注册、登录、退出登录与 Bearer 会话
-- 项目数据按登录用户隔离
-- 项目角色：组长、成员、只读成员
-- 项目创建、编辑、删除与多项目切换
-- 成员直接添加、邀请 Token/邀请码、接受邀请、修改角色、移除成员
-- 任务创建、负责人分配、状态流转和操作日志
-- 成员主动工作日志：开始工作、结束工作、日期、投入小时、工作说明
-- 任务完成后的 0–5 分质量评价与质量汇总
-- SQLite 向前兼容迁移、Docker 部署和自动化测试
+| 阶段 | 目标 | 状态 | 说明 |
+| --- | --- | --- | --- |
+| 阶段一 基础功能 P0 | 注册登录、项目、邀请、任务、打卡、评价、看板 | 已完成 | A/B/C 已形成真实协作闭环 |
+| 阶段二 AI 功能 P1 | 推荐、负载、匹配度、风险、周报 | D 推进中 | 规则推荐已可演示；LLM 失败走规则兜底 |
+| 阶段三 贡献系统 P1 | 手动贡献 + 外部平台接入 | 部分完成 | 手动贡献/确认/争议已有；GitHub 等接入未做 |
+| 阶段四 长期协作 P2 | 历史项目、画像、跨项目授权 | 未开始 | 归档接口有雏形，画像页不要用假数据 |
 
-认证接口：
+### 角色 TODO
 
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/auth/logout`
-- `GET /api/auth/me`
-- `POST /api/auth/accept-invitation`
+**A 后端底座 / 账号权限 / 数据库 / 部署**
 
-阶段一协作接口：
+- [x] A1-A6：拆分 routers/services、注册登录、权限、SQLAlchemy/Alembic、Docker、审计与限流
+- [ ] 与 D 对齐生产 `.env`（CORS、Secure Cookie、LLM）后再做正式部署验证
 
-- `POST/GET/PATCH/DELETE /api/projects/{id}/members...`
-- `POST/GET /api/projects/{id}/invitations`
-- `POST/GET/DELETE /api/projects/{id}/work-logs...`
-- `POST/GET /api/projects/{id}/quality-reviews`
-- `GET /api/projects/{id}/quality-summary`
+**B 核心业务后端**
 
-测试命令：
+- [x] B1-B5：项目、邀请、任务、打卡、质量评价
+- [x] B6：手动贡献账本（确认/争议）
+- [ ] B7：历史项目查询页面对齐；归档只读体验需 C 配合
+
+**C 前端产品 / 交互**
+
+- [x] 登录注册、项目空间、看板、打卡、评价、贡献、Agent 对话
+- [ ] C1：拆分 `frontend/src/main.jsx`，引入 Router / Query / TypeScript
+- [ ] C9：继续把报告页做成独立页面，去掉剩余装饰按钮
+- [ ] C10：不要提前做阶段四假画像
+
+**D AI / 数据分析 / 平台接入 / 质量（本轮）**
+
+- [x] D1：未分配任务推荐，权重 技能 40% / 质量 30% / 效率 20% / 负载 10%；超负载排除；理由可追溯；结果写入 `recommendations`
+- [x] D2：`/members/load` 与 `/risks`，覆盖延期、临近截止、无负责人、高负载
+- [x] D3：`/weekly-report` 基于任务、打卡、贡献；LLM 失败时用规则周报
+- [x] D4：Agent 只读项目事实，失败兜底，页面提示推荐仅供参考
+- [ ] D5：GitHub / 飞书 / 腾讯文档接入（等 B6 稳定后做，不阻塞阶段二演示）
+- [ ] D6：长期画像（阶段四）
+- [ ] D7：完整联调与演示手册；当前仅保留少量核心测试
+
+阶段二接口：
+
+- `GET /api/projects/{id}/recommendations`
+- `GET /api/projects/{id}/members/load`
+- `GET /api/projects/{id}/risks`
+- `GET /api/projects/{id}/weekly-report`
+- `POST /api/projects/{id}/agent/chat`
+
+本地验证：
 
 ```powershell
-python -m pytest -q backend
+python -m pytest -q backend/test_stage2.py backend/test_contract_p1.py backend/test_agent.py backend/test_stage1.py
 cd frontend
 npm run build
 ```
+
 ## 前端路由
+
 
 前端使用 Hash 路由，兼容 Vite 开发服务器和 Docker 中 FastAPI 的静态托管。工作区页面地址示例：
 

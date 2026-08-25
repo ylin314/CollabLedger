@@ -22,7 +22,7 @@ class AgentRuntime:
         self.llm = LLMClient(self.config)
 
     def _tool_args(self, message: str) -> dict[str, Any]:
-        match = re.search(r"[‘'“\"]([^’'”\"]{2,80})[’'”\"]", message)
+        match = re.search(r"[\u2018\u2019\u201c\u201d\'\"]([^\u2018\u2019\u201c\u201d\'\"]{2,80})[\u2018\u2019\u201c\u201d\'\"]", message)
         if match:
             return {"task_name": match.group(1)}
         return {"task_name": message.replace("推荐", "").replace("分配", "").strip()}
@@ -30,14 +30,23 @@ class AgentRuntime:
     def _fallback(self, message: str, facts: dict[str, Any]) -> str:
         risks = facts.get("risks", {}).get("risks", [])
         report = facts.get("report", {}).get("overall", {})
+        load = facts.get("load", {}).get("members", [])
+        recommendation = facts.get("recommendation") or {}
         if any(token in message.lower() for token in ("风险", "延期", "risk")):
             if risks:
                 first = risks[0]
                 focus = first.get("message") or first.get("title") or "请查看风险列表"
-                return f"当前共有 {len(risks)} 个项目风险。优先关注：{focus}。"
+                return f"当前共有 {len(risks)} 个项目风险。优先关注：{focus}。规则：{first.get('rule') or '延期、临近截止、无负责人、高负载'}。"
             return "目前未发现明显项目风险。"
         if any(token in message.lower() for token in ("周报", "总结", "summary")):
-            return f"本项目共 {report.get('tasks_total', 0)} 项任务，已完成 {report.get('tasks_completed', 0)} 项；这是一份基于项目事实的周报摘要。"
+            return f"本项目共 {report.get('tasks_total', 0)} 项任务，已完成 {report.get('tasks_completed', 0)} 项，延期 {report.get('tasks_overdue', 0)} 项。以上数字来自任务表，不虚构事实。"
+        if recommendation.get("recommendations"):
+            top = recommendation["recommendations"][0]
+            return f"更适合的候选人是 {top['name']}（匹配度 {top['score']}）。{top.get('reasons', {}).get('summary', '')}推荐仅供参考，最终由组长决定。"
+        if load:
+            high = [item["name"] for item in load if item.get("load_level") == "high"]
+            if high:
+                return f"当前高负载成员：{'、'.join(high)}。超负载成员不会进入推荐名单。"
         return "我已读取项目事实。可以继续询问风险、周报，或给出带任务名称的负责人推荐请求。"
 
     def run(self, project_id: int, message: str, session_id: str = "default") -> dict[str, Any]:
@@ -53,7 +62,7 @@ class AgentRuntime:
         self.memory.append(project_id, "user", message, session_id)
         system = (
             "你是协作账本 Agent。你只能依据提供的项目事实回答。你不是监控器，不判断成员是否摸鱼，不公开排名。"
-            "请用中文，先给结论，再给事实依据和下一步建议；若事实不足要明确说不足。"
+            "请用中文，先给结论，再给事实依据和下一步建议；若事实不足要明确说不足。推荐仅供参考，最终由组长决定。"
         )
         user_payload = {"message": message, "plan": AgentPlanner.as_dict(plan), "facts": facts, "recent_memory": history}
         llm_error = None
