@@ -10,7 +10,7 @@
 
 ## 1. 这次实现了什么
 
-本次改动落地了两个此前只停留在「目标设计」的能力，并把数据库 schema 版本从 `2` 升到 `3`：
+本次改动落地了两个此前只停留在「目标设计」的能力，并把数据库 schema 版本升到 `4`（`SCHEMA_VERSION`，见 `backend/db.py`）：
 
 1. **任务级评审人（reviewer）**
    - 任务新增可空外键 `reviewer_id`（指向 `users`，`ON DELETE SET NULL`）。
@@ -44,9 +44,10 @@
 
 ### 2.3 迁移
 
-- `SCHEMA_VERSION` 由 `2` 升至 `3`（`backend/db.py`）。
+- `SCHEMA_VERSION` 升至 `4`（`backend/db.py`）。
 - 新建库：`SCHEMA_SQL` 已包含上述字段。
 - 存量库：`initialize()` 中的前向迁移 `_add_columns` 幂等补齐 `tasks.reviewer_id`、`project_invitations.is_mentor`，无需手动 DDL。
+- 存量库还会幂等补齐 `task_review_history.updated_at`，并对存量数据回填（`UPDATE task_review_history SET updated_at=COALESCE(updated_at,created_at)`），保证历史记录有 `updated_at`。
 - 评审授权本身不落独立授权表——它就是任务上的一个字段，变更进任务日志（`task_logs`）。
 
 ---
@@ -161,7 +162,7 @@
 
 | 文件 | 改动 |
 |------|------|
-| `backend/db.py` | schema 版本升 3；`tasks.reviewer_id`、`project_invitations.is_mentor` 建表与迁移 |
+| `backend/db.py` | schema 版本升 4；`tasks.reviewer_id`、`project_invitations.is_mentor` 建表与迁移；`task_review_history.updated_at` 补列与回填 |
 | `backend/models.py` | `Task.reviewer_id`、`project_invitations.is_mentor` 映射 |
 | `backend/schemas.py` | 新增 `MentorIn`；`ProjectIn.mentors`、`InvitationIn.is_mentor`、`TaskIn.reviewer_id`、`TaskUpdate.reviewer_id` |
 | `backend/repositories/entities.py` | `task_row` 关联返回 `reviewer_name` |
