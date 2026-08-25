@@ -78,6 +78,33 @@ def test_reviewer_id_must_be_member_and_update_permission(monkeypatch, tmp_path)
     assert owner.patch(f"/api/tasks/{task['id']}", json={"reviewer_id": None}).json()["reviewer_id"] is None
 
 
+def test_creator_can_change_reviewer_id(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "reviewer-creator.db")
+    owner, creator, reviewer = _client(), _client(), _client()
+    _account(owner, "Owner", "owner-cr@example.com")
+    creator_user = _account(creator, "Creator", "creator-cr@example.com")
+    reviewer_user = _account(reviewer, "Reviewer", "reviewer-cr@example.com")
+
+    pid = owner.post("/api/projects", json={"name": "创建者项目"}).json()["id"]
+    code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member", "max_uses": 5}).json()["code"]
+    assert creator.post(f"/api/invitations/{code}/accept").status_code == 200
+    assert reviewer.post(f"/api/invitations/{code}/accept").status_code == 200
+
+    # 普通成员创建任务（不指派给自己），成为 created_by
+    task = creator.post(f"/api/projects/{pid}/tasks", json={"title": "创建者的任务"}).json()
+    assert task["reviewer_id"] is None and task["assignee_id"] is None
+
+    # 创建者即便不是负责人，仅修改 reviewer_id 也应放行
+    updated = creator.patch(f"/api/tasks/{task['id']}", json={"reviewer_id": reviewer_user["id"]})
+    assert updated.status_code == 200 and updated.json()["reviewer_id"] == reviewer_user["id"]
+    # 创建者也可以清空评审人
+    assert creator.patch(f"/api/tasks/{task['id']}", json={"reviewer_id": None}).json()["reviewer_id"] is None
+
+    # 但创建者若同时修改非执行字段（且非负责人），仍被拒绝
+    mixed = creator.patch(f"/api/tasks/{task['id']}", json={"reviewer_id": reviewer_user["id"], "title": "改标题"})
+    assert mixed.status_code == 403
+
+
 def test_create_project_with_mentors(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, "mentors.db")
     owner, mentor = _client(), _client()
