@@ -9,15 +9,19 @@ services:
     container_name: collab-ledger
     restart: unless-stopped
     ports:
-      - "${PORT:-8000}:8000"
+      - "${APP_BIND_HOST:-127.0.0.1}:${PORT:-8000}:8000"
     environment:
       COLLAB_DB: /data/collab.db
+      COLLAB_CORS_ORIGINS: ${COLLAB_CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173}
+      COLLAB_COOKIE_SECURE: ${COLLAB_COOKIE_SECURE:-auto}
+      COLLAB_TRUST_PROXY: ${COLLAB_TRUST_PROXY:-false}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://aigw.saurlax.com/}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
       LLM_CHAT_COMPLETIONS_URL: ${LLM_CHAT_COMPLETIONS_URL:-}
     volumes:
       - collab-ledger-data:/data
+      - ./backups:/backups
     healthcheck:
       test:
         - CMD
@@ -28,6 +32,13 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   collab-ledger-data:

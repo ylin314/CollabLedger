@@ -1,0 +1,36 @@
+# HTTPS overlay. Use together with compose.yaml:
+# docker compose -f compose.yaml -f compose.https.yaml --profile https up -d --build
+services:
+  collab-ledger:
+    environment:
+      COLLAB_CORS_ORIGINS: https://${COLLAB_DOMAIN:?Set COLLAB_DOMAIN for HTTPS deployment}
+      COLLAB_COOKIE_SECURE: "true"
+      COLLAB_TRUST_PROXY: "true"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: collab-ledger-caddy
+    restart: unless-stopped
+    profiles: ["https"]
+    depends_on:
+      collab-ledger:
+        condition: service_healthy
+    environment:
+      COLLAB_DOMAIN: ${COLLAB_DOMAIN:?Set COLLAB_DOMAIN for HTTPS deployment}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  caddy-data:
+  caddy-config:

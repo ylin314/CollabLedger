@@ -6,3 +6,8 @@ collab.db
 .env
 frontend/node_modules/
 frontend/dist/
+
+backups/
+*.partial
+*.restore-partial
+*.pre-restore-*.bak

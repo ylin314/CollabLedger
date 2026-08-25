@@ -1,0 +1,40 @@
+# PostgreSQL production overlay.
+# docker compose -f compose.yaml -f compose.postgres.yaml --profile postgres up -d --build
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: collab-ledger-postgres
+    restart: unless-stopped
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-collab_ledger}
+      POSTGRES_USER: ${POSTGRES_USER:-collab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - collab-ledger-postgres-data:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-collab} -d ${POSTGRES_DB:-collab_ledger}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  collab-ledger:
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-collab_ledger}
+      POSTGRES_USER: ${POSTGRES_USER:-collab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+
+volumes:
+  collab-ledger-postgres-data:

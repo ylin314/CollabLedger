@@ -40,6 +40,43 @@ docker compose up -d --build
 
 如果拉取基础镜像时提示连接 `127.0.0.1:7897` 失败，说明 Docker Desktop 配置了本地代理但代理程序未运行。请在 Docker Desktop 的 Settings → Resources → Proxies 中关闭该代理，或先启动对应代理程序，再重新执行一键部署命令。
 
+
+
+### PostgreSQL 生产数据库
+
+默认仍可零配置使用 SQLite。生产环境可启用 PostgreSQL：
+
+```powershell
+$env:POSTGRES_PASSWORD='请设置高强度密码'
+docker compose -f compose.yaml -f compose.postgres.yaml --profile postgres up -d --build
+```
+
+应用通过 SQLAlchemy/Alembic 管理完整数据库结构。PostgreSQL 备份和恢复分别使用 `scripts/backup_postgres.ps1` 与 `scripts/restore_postgres.ps1`。
+
+### 生产 HTTPS、备份与迁移
+
+生产部署使用 Caddy HTTPS overlay：
+
+```powershell
+docker compose -f compose.yaml -f compose.https.yaml --profile https up -d --build
+```
+
+上线前需要在 `.env` 配置正式域名、严格 CORS、Secure Cookie 和可信代理。完整说明见 `docs/DEPLOYMENT.md`。
+
+数据库备份和恢复：
+
+```powershell
+.\scripts\backup.ps1
+.\scripts\restore.ps1 -BackupFile .\backups\collab-时间戳.db -Yes
+```
+
+备份使用 SQLite Online Backup API 并自动执行完整性检查；详细流程见 `docs/BACKUP_RESTORE.md`。正式迁移由 Alembic 管理：
+
+```powershell
+python -m alembic upgrade head
+python -m alembic current
+```
+
 ## 后端启动
 
 ```powershell
@@ -99,7 +136,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 ### Agent 四层结构
 
 - `tool`：读取项目任务、成员负载、风险、报告，并调用规则推荐器。
-- `memory`：按项目和会话保存 Agent 对话记忆，使用 SQLite 持久化。
+- `memory`：按项目和会话保存 Agent 对话记忆，使用当前配置的 SQLite 或 PostgreSQL 数据库持久化。
 - `plan`：先根据问题规划需要读取的工具，再执行工具，避免模型凭空猜测。
 - `llm`：调用 OpenAI Chat Completions 兼容协议 `POST /v1/chat/completions`，不是 Responses API。
 

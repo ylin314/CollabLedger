@@ -60,5 +60,4 @@ class AgentConfig:
             "chat_completions_url": self.chat_completions_url,
             "model": self.model,
             "configured": self.configured,
-            "api_key_masked": f"{self.api_key[:4]}…{self.api_key[-4:]}" if len(self.api_key) >= 10 else ("已配置" if self.api_key else "未配置"),
         }

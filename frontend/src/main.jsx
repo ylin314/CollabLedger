@@ -46,6 +46,20 @@ function readRoute() {
   return { projectId: null, page: 'overview' }
 }
 function routeHash(projectId, page = 'overview') { return projectId ? `#/projects/${projectId}/${page}` : '#/projects/new' }
+function absoluteInviteUrl(invite) {
+  const code = invite?.invite_code || invite?.code || invite?.token
+  const route = invite?.invite_url || invite?.url || (code ? `/invite/${encodeURIComponent(code)}` : '')
+  if (!route) return ''
+  try { return new URL(route, window.location.origin).href } catch { return route }
+}
+async function copyText(value) {
+  if (!value) return false
+  if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(value); return true }
+  const input = document.createElement('textarea')
+  input.value = value; input.setAttribute('readonly', ''); input.style.position = 'fixed'; input.style.opacity = '0'
+  document.body.appendChild(input); input.select()
+  const copied = document.execCommand('copy'); input.remove(); return copied
+}
 
 function App() {
   const [auth, setAuth] = useState(undefined)
@@ -237,7 +251,14 @@ function MembersModal({ project, currentUser, onClose, onUpdated, onToast }) {
   async function updateRole(member, role) {
     try { const updated = await sendJson(`/api/projects/${project.id}/members/${member.user_id}`, { method: 'PATCH', body: JSON.stringify({ role }) }); const next = members.map(m => m.user_id === member.user_id ? { ...m, ...updated, role } : m); setMembers(next); onUpdated({ members: next }) } catch { onToast('角色更新失败') }
   }
-  return <div className="modal-backdrop"><div className="modal members-modal"><div className="modal-head"><div><span className="eyebrow">TEAM MANAGEMENT</span><h2>成员与邀请</h2><p className="modal-sub">维护成员身份、技能和项目角色。</p></div><button onClick={onClose}>×</button></div><div className="member-manage-list">{members.map(m => <div className="member-manage-row" key={m.id}><div className="avatar avatar-0">{initials(m.name)}</div><div className="member-manage-info"><strong>{m.name}</strong><span>{m.email || '未设置邮箱'} · {(m.skills || []).join('、') || '未填写技能'}</span></div><select value={m.role || 'member'} disabled={m.id === project.owner_id} onChange={e => updateRole(m, e.target.value)}><option value="owner">组长</option><option value="member">成员</option><option value="viewer">只读</option></select></div>)}</div><div className="form-section-title">添加成员</div><form className="member-add-form" onSubmit={event => { event.preventDefault(); createInvite() }}><div className="form-row"><label>姓名<input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="成员姓名" /></label><label>邮箱<input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="用于邀请或识别账号" /></label></div><div className="form-row"><label>技能<input value={form.skills} onChange={e => setForm(f => ({ ...f, skills: e.target.value }))} placeholder="前端，测试" /></label><label>角色<select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}><option value="member">成员</option><option value="viewer">只读</option></select></label></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={createInvite}>生成邀请链接</button><button type="button" className="primary-button" disabled={busy} onClick={createInvite}>{busy ? '生成中…' : '生成邀请链接'}</button></div></form>{invite && <div className="invite-result"><strong>邀请已生成</strong><span>{invite.invite_url || invite.url || `邀请码：${invite.invite_code || invite.code || invite.token}`}</span><button className="ghost-button" onClick={() => navigator.clipboard?.writeText(invite.invite_url || invite.url || invite.invite_code || invite.code || invite.token)}>复制</button></div>}</div></div>
+  const inviteUrl = absoluteInviteUrl(invite)
+  async function copyInvite() {
+    try {
+      if (!await copyText(inviteUrl)) throw new Error('clipboard unavailable')
+      onToast('完整邀请链接已复制')
+    } catch { onToast('复制失败，请手动复制邀请链接') }
+  }
+  return <div className="modal-backdrop"><div className="modal members-modal"><div className="modal-head"><div><span className="eyebrow">TEAM MANAGEMENT</span><h2>成员与邀请</h2><p className="modal-sub">维护成员身份、技能和项目角色。</p></div><button onClick={onClose}>×</button></div><div className="member-manage-list">{members.map(m => { const memberId = m.user_id || m.id; return <div className="member-manage-row" key={memberId}><div className="avatar avatar-0">{initials(m.name)}</div><div className="member-manage-info"><strong title={m.name}>{m.name}</strong><span title={`${m.email || '未设置邮箱'} · ${(m.skills || []).join('、') || '未填写技能'}`}>{m.email || '未设置邮箱'} · {(m.skills || []).join('、') || '未填写技能'}</span></div><select value={m.role || 'member'} disabled={memberId === project.owner_id} onChange={e => updateRole(m, e.target.value)}><option value="owner">组长</option><option value="member">成员</option><option value="viewer">只读</option></select></div> })}</div><div className="form-section-title">添加成员</div><form className="member-add-form" onSubmit={event => { event.preventDefault(); createInvite() }}><div className="form-row"><label>姓名<input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="成员姓名" /></label><label>邮箱<input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="用于邀请或识别账号" /></label></div><div className="form-row"><label>技能<input value={form.skills} onChange={e => setForm(f => ({ ...f, skills: e.target.value }))} placeholder="前端，测试" /></label><label>角色<select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}><option value="member">成员</option><option value="viewer">只读</option></select></label></div><div className="modal-actions"><button type="button" className="ghost-button" onClick={createInvite}>生成邀请链接</button><button type="button" className="primary-button" disabled={busy} onClick={createInvite}>{busy ? '生成中…' : '生成邀请链接'}</button></div></form>{invite && <div className="invite-result"><strong>邀请已生成</strong><span title={inviteUrl}>{inviteUrl}</span><button type="button" className="ghost-button" onClick={copyInvite}>复制完整链接</button></div>}</div></div>
 }
 
 function WorklogModal({ tasks, role, user, onClose, onToast }) {

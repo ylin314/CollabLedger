@@ -19,10 +19,14 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
     && useradd --create-home --uid 10001 appuser \
-    && mkdir -p /data /app/frontend/dist \
-    && chown -R appuser:appuser /data /app
+    && mkdir -p /data /backups /app/frontend/dist \
+    && chown -R appuser:appuser /data /backups /app
 
 COPY --chown=appuser:appuser backend/ ./backend/
+COPY --chown=appuser:appuser alembic/ ./alembic/
+COPY --chown=appuser:appuser alembic.ini ./alembic.ini
+COPY --chown=appuser:appuser scripts/ ./scripts/
+RUN chmod +x /app/scripts/entrypoint.sh
 COPY --from=frontend-builder --chown=appuser:appuser /build/frontend/dist/ ./frontend/dist/
 
 USER appuser
@@ -32,4 +36,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)" || exit 1
 
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["/app/scripts/entrypoint.sh"]
