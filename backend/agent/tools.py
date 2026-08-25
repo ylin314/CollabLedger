@@ -4,28 +4,24 @@ from typing import Any
 
 
 class AgentTools:
-    """Agent 可调用的项目事实工具。所有工具只读项目协作数据。"""
+    """Agent 可调用的项目事实工具。
+
+    HTTP 路由负责认证；进入 Agent 后只使用显式内部只读 helper，避免绕过路由或伪造 Request。
+    """
 
     def snapshot(self, project_id: int) -> dict[str, Any]:
-        from backend.main import get_project, project_report, project_risks
+        from backend.main import internal_project_snapshot
 
-        project = get_project(project_id)
-        return {
-            "project": {k: project.get(k) for k in ("id", "name", "project_type", "description", "start_date", "end_date")},
-            "members": project.get("members", []),
-            "tasks": project.get("tasks", []),
-            "report": project_report(project_id),
-            "risks": project_risks(project_id),
-        }
+        return internal_project_snapshot(project_id)
 
     def recommend(self, project_id: int, task_name: str, task_type: str | None = None, estimated_hours: float = 1) -> dict[str, Any]:
-        from backend.main import recommendations
+        from backend.main import internal_recommendations
 
         return {
             "task_name": task_name,
             "task_type": task_type,
             "estimated_hours": estimated_hours,
-            "recommendations": recommendations(project_id, task_name, task_type, estimated_hours),
+            "recommendations": internal_recommendations(project_id, task_name, task_type, estimated_hours),
         }
 
     def run(self, project_id: int, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:

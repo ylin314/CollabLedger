@@ -31,9 +31,13 @@ class AgentRuntime:
         risks = facts.get("risks", {}).get("risks", [])
         report = facts.get("report", {}).get("overall", {})
         if any(token in message.lower() for token in ("风险", "延期", "risk")):
-            return f"当前共有 {len(risks)} 个延期或存在风险的任务。" + (f"优先关注：{risks[0]['title']}。" if risks else "目前未发现明显延期任务。")
+            if risks:
+                first = risks[0]
+                focus = first.get("message") or first.get("title") or "请查看风险列表"
+                return f"当前共有 {len(risks)} 个项目风险。优先关注：{focus}。"
+            return "目前未发现明显项目风险。"
         if any(token in message.lower() for token in ("周报", "总结", "summary")):
-            return f"本项目共 {report.get('tasks', 0)} 项任务，已完成 {report.get('completed', 0)} 项；这是一份基于项目事实的周报摘要。"
+            return f"本项目共 {report.get('tasks_total', 0)} 项任务，已完成 {report.get('tasks_completed', 0)} 项；这是一份基于项目事实的周报摘要。"
         return "我已读取项目事实。可以继续询问风险、周报，或给出带任务名称的负责人推荐请求。"
 
     def run(self, project_id: int, message: str, session_id: str = "default") -> dict[str, Any]:
