@@ -158,10 +158,12 @@ def list_members(project_id: int, request: Request) -> dict[str, Any]:
 
 @router.patch("/api/projects/{project_id}/members/{user_id:int}")
 def update_member_role(project_id: int, user_id: int, payload: RoleUpdate, request: Request) -> dict[str, Any]:
-    conn = db(); project, _, _ = ensure_project_access(conn, project_id, request, "owner"); ensure_writable(project)
+    conn = db(); project, user, _ = ensure_project_access(conn, project_id, request, "owner"); ensure_writable(project)
     current = conn.execute("SELECT role FROM memberships WHERE project_id=? AND user_id=?", (project_id, user_id)).fetchone()
     if not current: conn.close(); fail(404, "NOT_FOUND", "项目成员不存在")
     if current["role"] == "owner" and payload.role != "owner":
+        if user is not None and project["owner_id"] != user["id"] and user_id != user["id"]:
+            conn.close(); fail(403, "FORBIDDEN", "只有主 owner 可以调整其他 owner 的角色")
         owner_count = conn.execute("SELECT COUNT(*) n FROM memberships WHERE project_id=? AND role='owner'", (project_id,)).fetchone()["n"]
         if owner_count <= 1: conn.close(); fail(409, "CONFLICT", "项目必须至少保留一个 owner")
     stamp = now_iso(); conn.execute("UPDATE memberships SET role=?,updated_at=? WHERE project_id=? AND user_id=?", (payload.role, stamp, project_id, user_id))
@@ -173,10 +175,12 @@ def update_member_role(project_id: int, user_id: int, payload: RoleUpdate, reque
 
 @router.delete("/api/projects/{project_id}/members/{user_id:int}", status_code=204)
 def remove_member(project_id: int, user_id: int, request: Request) -> Response:
-    conn = db(); project, _, _ = ensure_project_access(conn, project_id, request, "owner"); ensure_writable(project)
+    conn = db(); project, user, _ = ensure_project_access(conn, project_id, request, "owner"); ensure_writable(project)
     row = conn.execute("SELECT role FROM memberships WHERE project_id=? AND user_id=?", (project_id, user_id)).fetchone()
     if not row: conn.close(); fail(404, "NOT_FOUND", "项目成员不存在")
     if row["role"] == "owner":
+        if user is not None and project["owner_id"] != user["id"] and user_id != user["id"]:
+            conn.close(); fail(403, "FORBIDDEN", "只有主 owner 可以移除其他 owner")
         count = conn.execute("SELECT COUNT(*) n FROM memberships WHERE project_id=? AND role='owner'", (project_id,)).fetchone()["n"]
         if count <= 1: conn.close(); fail(409, "CONFLICT", "项目必须至少保留一个 owner")
     conn.execute("DELETE FROM memberships WHERE project_id=? AND user_id=?", (project_id, user_id))

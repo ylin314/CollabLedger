@@ -367,11 +367,12 @@ POST /api/projects/{project_id}/invitations
   "max_uses": 10,
   "used_count": 0,
   "revoked": false,
+  "is_mentor": false,
   "invite_url": "/invite/ABC123XYZ"
 }
 ```
 
-说明：邀请码为 12 位大写字符串。前端拼接邀请链接可用 `invite_url`。
+说明：邀请码为 12 位大写字符串。前端拼接邀请链接可用 `invite_url`。`is_mentor` 表示该邀请是否为导师观察者邀请（默认 `false`，仅前端标记用，不改变权限，见 10.2）。
 
 ### 3.5 获取邀请列表
 
@@ -994,7 +995,7 @@ DELETE /api/contributions/{contribution_id}
 
 ## 10. 附录：评审人与导师观察者（已实现）
 
-> 状态：**已实现并对齐代码**。规则已落地，对具体字段/接口的影响见前面各章（角色表 1.3、创建项目 2.2、任务对象 4.2、创建任务 4.4、更新任务 4.6、评价 6.2）。本附录做集中说明，供 A（权限/迁移）、C（前端）、D（统计口径）对齐。数据库 schema 版本升至 `3`（`tasks.reviewer_id`、`project_invitations.is_mentor`）。
+> 状态：**已实现并对齐代码**。规则已落地，对具体字段/接口的影响见前面各章（角色表 1.3、创建项目 2.2、任务对象 4.2、创建任务 4.4、更新任务 4.6、评价 6.2）。本附录做集中说明，供 A（权限/迁移）、C（前端）、D（统计口径）对齐。数据库 schema 版本升至 `4`（`tasks.reviewer_id`、`project_invitations.is_mentor`、`task_review_history.updated_at`）。
 
 ### 10.0 为什么需要这两个身份
 

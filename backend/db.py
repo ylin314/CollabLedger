@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.models import Base
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = r'''
 CREATE TABLE IF NOT EXISTS users (
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS task_reviews (
 );
 CREATE TABLE IF NOT EXISTS task_review_history (
  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, reviewer_id INTEGER NOT NULL,
- quality REAL NOT NULL, comment TEXT, created_at TEXT NOT NULL,
+ quality REAL NOT NULL, comment TEXT, created_at TEXT NOT NULL, updated_at TEXT,
  FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
  FOREIGN KEY(reviewer_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -384,6 +384,9 @@ def initialize(path: str | Path | None = None) -> None:
     _add_columns(conn, "project_invitations", {"max_uses": "INTEGER NOT NULL DEFAULT 1", "used_count": "INTEGER NOT NULL DEFAULT 0", "revoked": "INTEGER NOT NULL DEFAULT 0", "revoked_at": "TEXT", "updated_at": "TEXT", "is_mentor": "INTEGER NOT NULL DEFAULT 0"})
     _add_columns(conn, "contributions", {"evidence_url": "TEXT", "status": "TEXT NOT NULL DEFAULT 'pending'", "source": "TEXT NOT NULL DEFAULT 'manual'", "occurred_at": "TEXT", "updated_at": "TEXT", "created_by": "INTEGER", "confirmed_by": "INTEGER", "confirmed_at": "TEXT", "confirmation_note": "TEXT", "dispute_note": "TEXT", "deleted_at": "TEXT"})
     _add_columns(conn, "agent_memory", {"user_id": "INTEGER"})
+    _add_columns(conn, "task_review_history", {"updated_at": "TEXT"})
+    if "updated_at" in _columns(conn, "task_review_history"):
+        conn.execute("UPDATE task_review_history SET updated_at=COALESCE(updated_at,created_at)")
     stamp = now_iso()
     for table, created, updated in (("users", "created_at", "updated_at"), ("projects", "created_at", "updated_at"), ("memberships", "joined_at", "updated_at"), ("contributions", "created_at", "updated_at")):
         if updated in _columns(conn, table):
@@ -401,6 +404,7 @@ def initialize(path: str | Path | None = None) -> None:
         "project_invitations": ("expires_at", "accepted_at", "created_at", "updated_at", "revoked_at"),
         "auth_sessions": ("created_at", "expires_at", "revoked_at"), "work_logs": ("check_in", "check_out", "created_at", "updated_at"),
         "quality_reviews": ("created_at", "updated_at"), "audit_logs": ("created_at",),
+        "task_review_history": ("created_at", "updated_at"),
     }
     for table, columns in timestamp_columns.items():
         existing = _columns(conn, table)

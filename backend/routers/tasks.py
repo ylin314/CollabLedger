@@ -193,7 +193,9 @@ def task_logs(task_id: int, request: Request) -> dict[str, Any]:
 
 @router.delete("/api/tasks/{task_id}", status_code=204)
 def delete_task(task_id: int, request: Request) -> Response:
-    conn = db(); row = task_row(conn, task_id); project, _, _ = ensure_project_access(conn, row["project_id"], request, "owner"); ensure_writable(project)
+    conn = db(); row = task_row(conn, task_id); project, user, role = ensure_project_access(conn, row["project_id"], request, "viewer"); ensure_writable(project)
+    if user is not None and role != "owner" and row["created_by"] != user["id"]:
+        conn.close(); fail(403, "FORBIDDEN", "只有 owner 或任务创建人可以删除任务")
     conn.execute("UPDATE tasks SET deleted_at=?,updated_at=? WHERE id=?", (now_iso(), now_iso(), task_id)); conn.commit(); conn.close(); return Response(status_code=204)
 
 
@@ -237,7 +239,7 @@ def review_task(task_id: int, payload: ReviewIn, response: Response, request: Re
     if task["status"] != "completed": conn.close(); fail(409, "CONFLICT", "只有已完成任务可以评价")
     if task["assignee_id"] == user["id"] and role != "owner": conn.close(); fail(403, "FORBIDDEN", "不能评价自己的任务")
     existing = conn.execute("SELECT id FROM task_reviews WHERE task_id=?", (task_id,)).fetchone(); stamp = now_iso()
-    conn.execute("INSERT INTO task_review_history(task_id,reviewer_id,quality,comment,created_at) VALUES (?,?,?,?,?)", (task_id, user["id"], payload.quality, payload.comment, stamp))
+    conn.execute("INSERT INTO task_review_history(task_id,reviewer_id,quality,comment,created_at,updated_at) VALUES (?,?,?,?,?,?)", (task_id, user["id"], payload.quality, payload.comment, stamp, stamp))
     if existing:
         conn.execute("UPDATE task_reviews SET reviewer_id=?,quality=?,comment=?,updated_at=? WHERE task_id=?", (user["id"], payload.quality, payload.comment, stamp, task_id)); response.status_code = 200
     else:

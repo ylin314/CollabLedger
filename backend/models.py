@@ -149,7 +149,7 @@ task_reviews = table("task_reviews",
 task_review_history = table("task_review_history",
     Column("id", Integer, primary_key=True), Column("task_id", ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False),
     Column("reviewer_id", ForeignKey("users.id", ondelete="CASCADE"), nullable=False), Column("quality", Float, nullable=False),
-    Column("comment", Text), Column("created_at", String(40), nullable=False))
+    Column("comment", Text), Column("created_at", String(40), nullable=False), Column("updated_at", String(40)))
 
 agent_memory = table("agent_memory",
     Column("id", Integer, primary_key=True), Column("project_id", Integer, nullable=False),
