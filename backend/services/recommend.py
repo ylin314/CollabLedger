@@ -290,14 +290,22 @@ def llm_reasons(task: dict[str, Any], items: list[dict[str, Any]], cfg: dict[str
             "user_id": item["user_id"],
             "name": item["name"],
             "score": item["score"],
-            "dims": {key: item["dimensions"][key]["note"] for key in ("skill", "quality", "efficiency", "load")},
+            "dims": {
+                key: {
+                    "score": item["dimensions"][key]["score"],
+                    "note": item["dimensions"][key]["note"],
+                    "samples": item["dimensions"][key].get("samples", 0),
+                    "missing": item["dimensions"][key].get("missing", False),
+                }
+                for key in ("skill", "quality", "efficiency", "load")
+            },
         }
         for item in items
     ]
     prompt = (
-        "为每位候选人写一句中文推荐理由，先结论后事实，禁止排名、禁止负面标签。低匹配候选人请说明当前任务与本人技能相关性较低，并指出更匹配的方向；不要使用“不适合”“弱”“差”。"
+        "为每位候选人写一句中文推荐理由，先结论后事实，必须引用候选人四维事实数据中的具体数值或样本情况，禁止编造、禁止排名、禁止负面标签。低匹配候选人请说明当前任务与本人技能相关性较低，并指出更匹配的方向；不要使用“不适合”“弱”“差”。"
         "返回 JSON 对象，含 reasons 数组，每项含 user_id 与 summary。\n任务："
-        + json.dumps({"title": task.get("title"), "task_type": task.get("task_type")}, ensure_ascii=False)
+        + json.dumps({"title": task.get("title"), "task_type": task.get("task_type"), "description": (task.get("description") or "")[:400]}, ensure_ascii=False)
         + "\n候选人："
         + json.dumps(compact, ensure_ascii=False)
     )
