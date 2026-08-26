@@ -58,8 +58,8 @@ def post_recommendation_decision(project_id: int, rec_id: int, payload: Recommen
 
 
 @router.get("/api/projects/{project_id}/risks")
-def project_risks(project_id: int, request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
-    conn = db(); ensure_project_access(conn, project_id, request, allow_internal=request is None); conn.close(); return internal_project_risks(project_id)
+def project_risks(project_id: int, request: Request = None, summarize: bool = Query(default=True)) -> dict[str, Any]:  # type: ignore[assignment]
+    conn = db(); ensure_project_access(conn, project_id, request, allow_internal=request is None); conn.close(); return internal_project_risks(project_id, summarize=summarize)
 
 
 @router.get("/api/projects/{project_id}/report")

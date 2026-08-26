@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -22,33 +23,91 @@ from backend.services.recommend import (
 LOAD_LABELS = {"low": "低负载", "normal": "正常", "high": "高负载"}
 
 
+LOAD_WEIGHT_DEFAULTS = {"in_progress": 1.0, "assigned": 0.6, "paused": 0.5, "overdue": 1.3}
+
+
+def _load_weight(status: str) -> float:
+    """任务状态权重，可经环境变量覆盖：LOAD_WEIGHT_IN_PROGRESS / LOAD_WEIGHT_ASSIGNED / LOAD_WEIGHT_PAUSED / LOAD_WEIGHT_OVERDUE。"""
+    env_key = {"in_progress": "LOAD_WEIGHT_IN_PROGRESS", "assigned": "LOAD_WEIGHT_ASSIGNED", "paused": "LOAD_WEIGHT_PAUSED", "overdue": "LOAD_WEIGHT_OVERDUE"}.get(status)
+    if env_key is None:
+        return LOAD_WEIGHT_DEFAULTS.get(status, 1.0)
+    try:
+        return float(os.getenv(env_key, str(LOAD_WEIGHT_DEFAULTS[status])))
+    except (TypeError, ValueError):
+        return LOAD_WEIGHT_DEFAULTS[status]
+
+
 def internal_member_load(project_id: int) -> dict[str, Any]:
     conn = db(); ensure_project(conn, project_id)
     members = conn.execute("SELECT u.id user_id,u.name,u.max_concurrent_tasks FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? ORDER BY u.id", (project_id,)).fetchall()
     result = []
     for member in members:
-        tasks = conn.execute("SELECT id,COALESCE(estimated_hours,0) estimated_hours FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL AND status IN ('assigned','in_progress','paused','overdue')", (project_id, member["user_id"])).fetchall()
+        tasks = conn.execute("SELECT id,status,COALESCE(estimated_hours,0) estimated_hours FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL AND status IN ('assigned','in_progress','paused','overdue')", (project_id, member["user_id"])).fetchall()
         current = len(tasks); maximum = max(1, member["max_concurrent_tasks"]); ratio = current / maximum
         level = "low" if ratio < .5 else ("normal" if ratio <= .8 else "high")
+        weighted = sum(_load_weight(task["status"]) for task in tasks) / maximum
+        weighted_level = "low" if weighted < .5 else ("normal" if weighted <= .8 else "high")
         result.append({
             "user_id": member["user_id"], "name": member["name"], "current_task_count": current, "max_concurrent_tasks": maximum,
             "remaining_capacity": max(0, maximum - current), "load_ratio": round(ratio, 2), "load_level": level,
             "load_label": LOAD_LABELS[level], "overloaded": current >= maximum,
             "estimated_hours": round(sum(task["estimated_hours"] for task in tasks), 2),
             "active_task_ids": [task["id"] for task in tasks],
+            "weighted_load": round(weighted, 2),
+            "weighted_level": weighted_level,
+            "weighted_label": LOAD_LABELS[weighted_level],
+            "weighted_overdue_tasks": sum(1 for task in tasks if task["status"] in ("overdue", "unfinished")),
             "rule": "进行中 / 已分配 / 暂停 / 延期任务计入当前负载；达到最大并发任务数视为超负载",
         })
     conn.close()
-    return {"project_id": project_id, "generated_at": now_iso(), "rule": "负载 = 当前占用任务数 / 最大并发任务数；<0.5 低负载，0.5-0.8 正常，>0.8 高负载", "members": result}
+    return {"project_id": project_id, "generated_at": now_iso(), "rule": "负载 = 当前占用任务数 / 最大并发任务数；加权负载 = Σ状态权重 / 最大并发任务数（进行中 1.0、已分配 0.6、暂停 0.5、延期 1.3）；<0.5 低负载，0.5-0.8 正常，>0.8 高负载", "members": result}
 
 
+
+
+RISK_SEVERITY = {
+    "critical_unassigned": 95,
+    "overdue_task": 90,
+    "upcoming_deadline": 70,
+    "high_member_load": 65,
+    "unassigned_task": 60,
+    "no_recent_activity": 30,
+}
 
 
 def _risk_item(kind: str, level: str, message: str, rule: str, **extra: Any) -> dict[str, Any]:
-    return {"type": kind, "level": level, "message": message, "rule": rule, **extra}
+    return {"type": kind, "level": level, "message": message, "rule": rule, "severity": RISK_SEVERITY.get(kind, 50), **extra}
 
 
-def internal_project_risks(project_id: int) -> dict[str, Any]:
+def _rule_risk_summary(risks: list[dict[str, Any]]) -> str:
+    if not risks:
+        return "当前未发现明显项目风险。"
+    first = risks[0]
+    return f"当前共有 {len(risks)} 个项目风险，优先关注：{first.get('message')}。建议按风险严重度逐项处理。"
+
+
+def _llm_risk_summary(project_id: int, risks: list[dict[str, Any]]) -> tuple[str, str]:
+    """LLM 生成风险自然语言总结；任一环节失败回退规则拼接，接口不报错。"""
+    if not risks:
+        return "当前未发现明显项目风险。", "rule"
+    facts = [{"type": r.get("type"), "level": r.get("level"), "message": r.get("message"), "rule": r.get("rule")} for r in risks[:8]]
+    prompt = (
+        "你是协作账本的风险总结助手。只依据给定的风险事实，用 1-2 句中文总结当前最需要关注的风险并给出下一步建议。"
+        "禁止编造事实，禁止点名批评成员，不使用负面人格标签。只返回 JSON：{\"summary\": \"...\"}。"
+        f"项目事实：{json.dumps({'project_id': project_id, 'risks': facts}, ensure_ascii=False)}"
+    )
+    try:
+        from backend.services.recommend import llm_json
+        data = llm_json(prompt, timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "45")))
+        text = str(data.get("summary") or "").strip()
+        if text:
+            return text, "llm"
+    except Exception:
+        pass
+    return _rule_risk_summary(risks), "rule"
+
+
+def internal_project_risks(project_id: int, summarize: bool = False) -> dict[str, Any]:
     conn = db(); ensure_project(conn, project_id); today = utc_today(); soon = today + timedelta(days=3); risks: list[dict[str, Any]] = []
     tasks = conn.execute("SELECT * FROM tasks WHERE project_id=? AND deleted_at IS NULL AND status!='completed'", (project_id,)).fetchall()
     for task in tasks:
@@ -58,6 +117,8 @@ def internal_project_risks(project_id: int) -> dict[str, Any]:
             risks.append(_risk_item("upcoming_deadline", "medium", f"任务「{task['title']}」临近截止", "截止日期在未来 3 天内", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
         if task["assignee_id"] is None:
             risks.append(_risk_item("unassigned_task", "medium", f"任务「{task['title']}」尚未分配", "任务没有负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
+        if task["priority"] == "high" and task["status"] == "unassigned":
+            risks.append(_risk_item("critical_unassigned", "high", f"关键任务「{task['title']}」无人承接", "高优先级任务未分配负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
     for member in internal_member_load(project_id)["members"]:
         if member["load_level"] == "high":
             risks.append(_risk_item("high_member_load", "medium", f"{member['name']}当前负载为 {member['current_task_count']}/{member['max_concurrent_tasks']}", "当前占用任务数 / 最大并发任务数 > 0.8", user_id=member["user_id"], current_task_count=member["current_task_count"], max_concurrent_tasks=member["max_concurrent_tasks"]))
@@ -68,8 +129,14 @@ def internal_project_risks(project_id: int) -> dict[str, Any]:
                 risks.append(_risk_item("no_recent_activity", "low", "项目最近 7 天没有任务活动", "最近一次任务日志早于 7 天"))
         except ValueError:
             pass
+    risks.sort(key=lambda item: item.get("severity", 0), reverse=True)
+    payload: dict[str, Any] = {"project_id": project_id, "generated_at": now_iso(), "count": len(risks), "risks": risks, "rule": "覆盖延期、临近截止、无负责人和高负载四类风险；按严重度降序排列"}
+    if summarize and risks:
+        summary, summary_source = _llm_risk_summary(project_id, risks)
+        payload["summary"] = summary
+        payload["summary_source"] = summary_source
     conn.close()
-    return {"project_id": project_id, "generated_at": now_iso(), "count": len(risks), "risks": risks, "rule": "覆盖延期、临近截止、无负责人和高负载四类风险"}
+    return payload
 
 
 def internal_project_report(project_id: int) -> dict[str, Any]:

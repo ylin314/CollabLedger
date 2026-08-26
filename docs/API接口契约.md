@@ -1311,17 +1311,22 @@ GET /api/projects/{project_id}/members/load
       "load_ratio": 1.0,
       "load_level": "high",
       "estimated_hours": 18,
-      "active_task_ids": [1, 2, 3]
+      "active_task_ids": [1, 2, 3],
+      "weighted_load": 1.3,
+      "weighted_level": "high",
+      "weighted_label": "高负载",
+      "weighted_overdue_tasks": 1
     }
   ]
 }
 ```
 
-`load_level`：
+字段说明（D2 深化，向后兼容）：
 
-- `low`：`load_ratio < 0.5`
-- `normal`：`0.5 <= load_ratio <= 0.8`
-- `high`：`load_ratio > 0.8`
+- `load_ratio` / `load_level`：按任务数计数（保留原语义，前端不受影响）。
+- `weighted_load`：加权负载 = Σ状态权重 ÷ 最大并发任务数；状态权重默认进行中 1.0、已分配 0.6、暂停 0.5、延期 1.3，可用 `LOAD_WEIGHT_IN_PROGRESS` / `LOAD_WEIGHT_ASSIGNED` / `LOAD_WEIGHT_PAUSED` / `LOAD_WEIGHT_OVERDUE` 环境变量覆盖。
+- `weighted_level` / `weighted_label`：按加权比计算，`<0.5` 低负载、`0.5-0.8` 正常、`>0.8` 高负载。
+- `weighted_overdue_tasks`：该成员当前延期任务数。
 
 ### 9.3 获取项目风险
 
@@ -1338,10 +1343,13 @@ GET /api/projects/{project_id}/risks
   "project_id": 1,
   "generated_at": "2026-08-25T10:00:00Z",
   "count": 2,
+  "summary": "当前最需要关注：任务「完成后端鉴权模块」已延期。建议优先处理延期调度与指派。",
+  "summary_source": "llm",
   "risks": [
     {
       "type": "overdue_task",
       "level": "high",
+      "severity": 90,
       "message": "任务「完成后端鉴权模块」已延期",
       "task_id": 1,
       "due_date": "2026-09-10"
@@ -1349,6 +1357,7 @@ GET /api/projects/{project_id}/risks
     {
       "type": "high_member_load",
       "level": "medium",
+      "severity": 65,
       "message": "张三当前负载为 3/3",
       "user_id": 2,
       "current_task_count": 3,
@@ -1358,8 +1367,21 @@ GET /api/projects/{project_id}/risks
 }
 ```
 
-`type` 可选值：`overdue_task`、`upcoming_deadline`、`unassigned_task`、`high_member_load`、`no_recent_activity`。  
+Query 参数：
+
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `summarize` | bool | 否 | `true` | 是否生成 LLM 风险总结；传 `0`/`false` 跳过（批量/性能场景） |
+
+`type` 可选值：`overdue_task`、`upcoming_deadline`、`unassigned_task`、`high_member_load`、`no_recent_activity`、`critical_unassigned`。  
 `level` 可选值：`low`、`medium`、`high`。
+
+`severity`（0-100，输出按降序排列）：`critical_unassigned=95`、`overdue_task=90`、`upcoming_deadline=70`、`high_member_load=65`、`unassigned_task=60`、`no_recent_activity=30`。
+
+`summary` / `summary_source`（D2 深化）：
+
+- 默认 `summarize=true` 且存在风险时才生成 `summary`；LLM 未配置或任一段失败时 `summary_source="rule"` 回退规则拼接，接口不报错。
+- `critical_unassigned`：高优先级（`priority='high'`）且未分配的任务，代表“关键任务无人承接”。
 
 ### 9.4 生成项目周报
 
