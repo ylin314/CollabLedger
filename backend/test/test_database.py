@@ -40,6 +40,40 @@ def test_postgresql_compat_sql_translation():
     assert bindings == {"p0": "a@example.com", "p1": 7}
 
 
+def test_postgresql_initialize_adds_new_columns_to_existing_schema(monkeypatch):
+    class FakeInspector:
+        def get_columns(self, table):
+            return [{"name": name} for name in {
+                "tasks": {"id"},
+                "project_invitations": {"id"},
+                "task_review_history": {"id", "created_at"},
+            }[table]]
+
+    executed = []
+
+    class FakeConnection:
+        def execute(self, statement):
+            executed.append(str(statement))
+
+    class FakeEngine:
+        def begin(self):
+            class Context:
+                def __enter__(self):
+                    return FakeConnection()
+
+                def __exit__(self, exc_type, exc, traceback):
+                    return False
+
+            return Context()
+
+    monkeypatch.setattr(db, "get_engine", lambda path=None: FakeEngine())
+    monkeypatch.setattr(db, "inspect", lambda connection: FakeInspector())
+    db._initialize_postgresql()
+    assert any('ALTER TABLE "tasks" ADD COLUMN "reviewer_id" INTEGER' in statement for statement in executed)
+    assert any('ALTER TABLE "project_invitations" ADD COLUMN "is_mentor" INTEGER NOT NULL DEFAULT 0' in statement for statement in executed)
+    assert any('ALTER TABLE "task_review_history" ADD COLUMN "updated_at" VARCHAR(40)' in statement for statement in executed)
+
+
 def test_compat_connection_insert_select_and_lastrowid(tmp_path):
     engine = create_engine(f"sqlite:///{(tmp_path / 'compat.db').as_posix()}")
     Base.metadata.create_all(engine)

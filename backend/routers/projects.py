@@ -255,7 +255,7 @@ def _invitation_valid(row: sqlite3.Row) -> bool:
 @router.get("/api/invitations/{code}")
 def get_invitation(code: str, request: Request) -> dict[str, Any]:
     conn = db(); require_user(conn, request); row = _load_invitation(conn, code); valid = _invitation_valid(row); conn.close()
-    return {"project_id": row["project_id"], "project_name": row["project_name"], "role": row["role"], "expires_at": row["expires_at"], "valid": valid}
+    return {"project_id": row["project_id"], "project_name": row["project_name"], "role": row["role"], "expires_at": row["expires_at"], "is_mentor": bool(row["is_mentor"]), "valid": valid}
 
 
 def _accept_code(code: str, request: Request) -> dict[str, Any]:
@@ -263,7 +263,7 @@ def _accept_code(code: str, request: Request) -> dict[str, Any]:
     if conn.execute("SELECT 1 FROM memberships WHERE project_id=? AND user_id=?", (row["project_id"], user["id"])).fetchone():
         conn.close(); fail(409, "CONFLICT", "用户已是项目成员")
     if not _invitation_valid(row): conn.close(); fail(409, "CONFLICT", "邀请已过期、已撤销或已达到使用上限")
-    if row["email"] and user["email"] and row["email"].lower() != user["email"].lower(): conn.close(); fail(403, "FORBIDDEN", "该邀请不适用于当前用户")
+    if row["email"] and (not user["email"] or row["email"].casefold() != user["email"].casefold()): conn.close(); fail(403, "FORBIDDEN", "该邀请不适用于当前用户")
     stamp = now_iso(); conn.execute("INSERT INTO memberships(project_id,user_id,role,joined_at,updated_at) VALUES (?,?,?,?,?)", (row["project_id"], user["id"], row["role"], stamp, stamp))
     conn.execute("UPDATE project_invitations SET used_count=used_count+1,accepted_at=?,updated_at=? WHERE id=?", (stamp, stamp, row["id"])); conn.commit(); conn.close()
     return {"project_id": row["project_id"], "user_id": user["id"], "role": row["role"], "joined_at": stamp}

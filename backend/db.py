@@ -377,6 +377,23 @@ def _add_columns(conn: sqlite3.Connection, table: str, definitions: dict[str, st
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
+def _initialize_postgresql(path: str | Path | None = None) -> None:
+    engine = get_engine(path)
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        additions = {
+            "tasks": {"reviewer_id": "INTEGER"},
+            "project_invitations": {"is_mentor": "INTEGER NOT NULL DEFAULT 0"},
+            "task_review_history": {"updated_at": "VARCHAR(40)"},
+        }
+        for table, definitions in additions.items():
+            existing = {column["name"] for column in inspector.get_columns(table)}
+            for name, definition in definitions.items():
+                if name not in existing:
+                    conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}'))
+        conn.execute(text("UPDATE task_review_history SET updated_at=COALESCE(updated_at,created_at)"))
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -385,6 +402,7 @@ def initialize(path: str | Path | None = None) -> None:
     url = database_url(path)
     if not _is_sqlite(url):
         Base.metadata.create_all(get_engine(path))
+        _initialize_postgresql(path)
         return
     conn = connect(path)
     legacy_contributions = "contributions" in [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='contributions'")] and "status" not in _columns(conn, "contributions")
