@@ -147,7 +147,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 
 ## 当前阶段与角色 TODO
 
-更新时间：2026-08-25。分支约定：`main` 只合可运行代码；rxc 当前开发分支为 `dev_D`。角色对应：A=ly，B=dkd，C=czc，D=rxc。任务编号（A1/B1/C1/D1）保持不变。
+更新时间：2026-08-26。分支约定：`main` 只合可运行代码；rxc 当前开发分支为 `dev_D`。角色对应：A=ly，B=dkd，C=czc，D=rxc。任务编号（A1/B1/C1/D1）保持不变。
 
 | 阶段 | 目标 | 状态 | 说明 |
 | --- | --- | --- | --- |
@@ -181,6 +181,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 - [x] D1 加深：技能 40% / 质量 30% / 效率 20% / 负载 10%；仅 member 默认候选；超负载排除；无样本中性分 0.5；规则 + LLM 语义匹配/理由润色；四维证据；批量建议；采纳/手选留痕
 - [x] D1 本轮：技能族匹配（后端/前端/文档等同义词，不再只靠字面子串）、候选人对比解释、推荐历史中文状态、可重复演示种子 `scripts/seed_stage2_demo.py`
 - [x] D1 已接入真实 LLM：StepFun `step-3.7-flash`，语义匹配与理由润色已验证；无 `.env` 时仍自动回退规则路径
+- [x] D1 深化二轮：LLM 理由注入任务描述+四维事实（数值化理由、低匹配候选指明方向）；前端 AI 降级提示（degrade-note）；推荐卡片结构化证据标签（技能族/样本数/负载/来源）；推荐历史页展示批量/单任务、来源、采纳人、改派对象
 - [x] D2：`/members/load` 与 `/risks`（本轮冻结）
 - [x] D3：`/weekly-report`（本轮冻结）
 - [x] D4：Agent 只读项目事实（本轮冻结）
