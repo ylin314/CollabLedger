@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 import backend.main as api
+from backend.auth import create_session
 
 
 def _client() -> TestClient:
@@ -32,7 +33,7 @@ def test_reviewer_assignment_and_review_permission(monkeypatch, tmp_path):
     member_code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
     assert member.post(f"/api/invitations/{member_code}/accept").status_code == 200
     # 导师以 viewer 身份加入，可被指定为评审人
-    mentor_code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "viewer", "is_mentor": True}).json()["code"]
+    mentor_code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "viewer", "is_mentor": True, "email": "reviewer-rv@example.com"}).json()["code"]
     assert reviewer.post(f"/api/invitations/{mentor_code}/accept").status_code == 200
 
     task = owner.post(
@@ -126,3 +127,40 @@ def test_create_project_with_mentors(monkeypatch, tmp_path):
     # 没有 mentors 时不返回 mentor_invitations
     plain = owner.post("/api/projects", json={"name": "普通项目"}).json()
     assert "mentor_invitations" not in plain
+
+
+def test_mentor_invitation_requires_valid_bound_email(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "mentor-email-validation.db")
+    owner, invited_mentor, other_user, email_less_user = _client(), _client(), _client(), _client()
+    _account(owner, "Owner", "owner-me@example.com")
+    _account(invited_mentor, "Invited Mentor", "mentor-me@example.com")
+    _account(other_user, "Other User", "other-me@example.com")
+
+    missing_email = owner.post("/api/projects", json={"name": "缺少导师邮箱", "mentors": [{}]})
+    invalid_email = owner.post("/api/projects", json={"name": "错误导师邮箱", "mentors": [{"email": "not-an-email"}]})
+    assert missing_email.status_code == 422
+    assert invalid_email.status_code == 422
+
+    project_id = owner.post("/api/projects", json={"name": "导师邮箱绑定"}).json()["id"]
+    unbound = owner.post(f"/api/projects/{project_id}/invitations", json={"role": "viewer", "is_mentor": True})
+    invalid_generic = owner.post(f"/api/projects/{project_id}/invitations", json={"role": "viewer", "is_mentor": True, "email": "invalid"})
+    invitation = owner.post(
+        f"/api/projects/{project_id}/invitations",
+        json={"role": "viewer", "is_mentor": True, "email": " MENTOR-ME@EXAMPLE.COM "},
+    )
+    assert unbound.status_code == 422
+    assert invalid_generic.status_code == 422
+    assert invitation.status_code == 201
+
+    code = invitation.json()["code"]
+    assert other_user.post(f"/api/invitations/{code}/accept").status_code == 403
+    conn = api.db()
+    user_id = conn.execute(
+        "INSERT INTO users(name,email,created_at) VALUES (?,NULL,?)",
+        ("Email-less User", api.now_iso()),
+    ).lastrowid
+    token, _ = create_session(conn, user_id)
+    conn.commit()
+    conn.close()
+    assert email_less_user.post(f"/api/invitations/{code}/accept", headers={"Authorization": f"Bearer {token}"}).status_code == 403
+    assert invited_mentor.post(f"/api/invitations/{code}/accept").status_code == 200

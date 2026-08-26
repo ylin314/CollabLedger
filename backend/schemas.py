@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+_EMAIL_PATTERN = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
+
+
+def _normalize_email(value: str) -> str:
+    email = value.strip().lower()
+    if not _EMAIL_PATTERN.fullmatch(email):
+        raise ValueError("邮箱格式不正确")
+    return email
 
 class UserIn(BaseModel):
     name: str = Field(min_length=1, max_length=50)
@@ -33,7 +44,12 @@ class UserUpdate(BaseModel):
 
 
 class MentorIn(BaseModel):
-    email: Optional[str] = Field(default=None, max_length=254)
+    email: str = Field(min_length=3, max_length=254)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return _normalize_email(value)
 
 
 class ProjectIn(BaseModel):
@@ -74,6 +90,17 @@ class InvitationIn(BaseModel):
     email: Optional[str] = None
     expires_days: Optional[int] = Field(default=None, ge=1, le=365)
     is_mentor: bool = False
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_email(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def require_mentor_email(self) -> "InvitationIn":
+        if self.is_mentor and self.email is None:
+            raise ValueError("导师邀请必须填写邮箱")
+        return self
 
 
 class AcceptInvitationIn(BaseModel):
