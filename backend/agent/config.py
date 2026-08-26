@@ -33,6 +33,7 @@ class AgentConfig:
     timeout_seconds: float = 45.0
     temperature: float = 0.2
     max_tokens: int = 1200
+    reasoning_effort: str | None = None
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
@@ -43,6 +44,7 @@ class AgentConfig:
             timeout_seconds=float(os.getenv("LLM_TIMEOUT_SECONDS", "45")),
             temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
             max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1200")),
+            reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "").strip() or None,
         )
 
     @property

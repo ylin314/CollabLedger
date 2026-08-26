@@ -288,6 +288,32 @@ def _simple_pdf_bytes(title: str) -> bytes:
     out.extend(f"trailer << /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode()); return bytes(out)
 
 
+def internal_task_detail(project_id: int, task_id: int) -> dict[str, Any]:
+    """单任务只读详情：标题/状态/负责人/截止/工时/打卡/评价，供 Agent 工具使用。"""
+    conn = db(); ensure_project(conn, project_id)
+    row = conn.execute(
+        "SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE t.id=? AND t.project_id=? AND t.deleted_at IS NULL",
+        (task_id, project_id),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return {"task_id": task_id, "found": False, "message": "任务不存在或不属于该项目"}
+    task = as_task(row)
+    checkins = conn.execute(
+        "SELECT COUNT(*) n,COALESCE(SUM(hours),0) hours FROM task_checkins WHERE task_id=? AND project_id=?",
+        (task_id, project_id),
+    ).fetchone()
+    review = conn.execute(
+        "SELECT r.quality,r.comment,r.reviewer_id,u.name reviewer_name,r.created_at FROM task_reviews r LEFT JOIN users u ON u.id=r.reviewer_id WHERE r.task_id=?",
+        (task_id,),
+    ).fetchone()
+    conn.close()
+    task["checkin_count"] = checkins["n"] or 0
+    task["checkin_hours"] = round(checkins["hours"] or 0, 2)
+    task["review"] = dict(review) if review else None
+    return {"task_id": task_id, "found": True, "task": task}
+
+
 def internal_project_snapshot(project_id: int) -> dict[str, Any]:
     conn = db(); project = ensure_project(conn, project_id); detail = _project_detail(conn, project, None)
     members = list_members_internal(conn, project_id)
@@ -302,4 +328,4 @@ def list_members_internal(conn, project_id: int) -> list[dict[str, Any]]:
         item = dict(row); item["skills"] = json.loads(item["skills"] or "[]"); result.append(item)
     return result
 
-__all__ = ['internal_member_load', 'internal_recommendations', 'recommendations', 'persist_recommendation_record', 'build_recommendation_payload', 'batch_recommendations', 'list_recommendation_history', 'decide_recommendation', 'internal_project_risks', 'internal_project_report', '_week_bounds', 'internal_weekly_report', 'get_weekly_report', 'list_weekly_reports', '_weekly_markdown', '_report_markdown', '_simple_pdf_bytes', 'internal_project_snapshot', 'list_members_internal', 'RECOMMEND_WEIGHTS', 'RECOMMEND_DISCLAIMER']
+__all__ = ['internal_member_load', 'internal_recommendations', 'recommendations', 'persist_recommendation_record', 'build_recommendation_payload', 'batch_recommendations', 'list_recommendation_history', 'decide_recommendation', 'internal_project_risks', 'internal_project_report', '_week_bounds', 'internal_weekly_report', 'get_weekly_report', 'list_weekly_reports', '_weekly_markdown', '_report_markdown', '_simple_pdf_bytes', 'internal_task_detail', 'internal_project_snapshot', 'list_members_internal', 'RECOMMEND_WEIGHTS', 'RECOMMEND_DISCLAIMER']
