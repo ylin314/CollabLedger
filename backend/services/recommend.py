@@ -193,7 +193,7 @@ def llm_json(prompt: str, timeout: float) -> dict[str, Any]:
     )
     content = client.complete(
         [
-            {"role": "system", "content": "你是协作账本的任务推荐助手。只根据给定事实打分和写理由，禁止编造经历，禁止排名或负面标签。只返回 JSON。"},
+            {"role": "system", "content": "你是协作账本的任务推荐助手。只根据给定事实打分和写理由，禁止编造经历，禁止排名或负面标签。对低匹配候选人使用中性、建设性表述，不使用“不适合”“弱”“差”。只返回 JSON。"},
             {"role": "user", "content": prompt},
         ]
     )
@@ -295,7 +295,7 @@ def llm_reasons(task: dict[str, Any], items: list[dict[str, Any]], cfg: dict[str
         for item in items
     ]
     prompt = (
-        "为每位候选人写一句中文推荐理由，先结论后事实，禁止排名、禁止负面标签。"
+        "为每位候选人写一句中文推荐理由，先结论后事实，禁止排名、禁止负面标签。低匹配候选人请说明当前任务与本人技能相关性较低，并指出更匹配的方向；不要使用“不适合”“弱”“差”。"
         "返回 JSON 对象，含 reasons 数组，每项含 user_id 与 summary。\n任务："
         + json.dumps({"title": task.get("title"), "task_type": task.get("task_type")}, ensure_ascii=False)
         + "\n候选人："

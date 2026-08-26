@@ -88,12 +88,12 @@ uvicorn backend.main:app --reload --port 8000
 
 项目根目录的 `.env` 是 Agent 的唯一配置入口。后端会自动读取它；Docker Compose 也会把同一组变量注入容器。`.env` 已加入 `.gitignore`，不会提交到 Git。
 
-当前 `.env` 使用 OpenAI Chat Completions 兼容协议（不使用 Responses API）。完整模板见 `.env.example`：
+当前 `.env` 使用 StepFun 的 OpenAI Chat Completions 兼容协议（不使用 Responses API），模型为 `step-3.7-flash`。完整模板见 `.env.example`：
 
 ```dotenv
-LLM_BASE_URL=https://aigw.saurlax.com/
+LLM_BASE_URL=https://api.stepfun.com/step_plan/v1
 LLM_API_KEY=你的APIKey
-LLM_MODEL=deepseek-v4-flash
+LLM_MODEL=step-3.7-flash
 LLM_CHAT_COMPLETIONS_URL=
 RECOMMEND_SKILL_MODE=llm
 RECOMMEND_USE_LLM_SKILL=true
@@ -180,7 +180,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 
 - [x] D1 加深：技能 40% / 质量 30% / 效率 20% / 负载 10%；仅 member 默认候选；超负载排除；无样本中性分 0.5；规则 + LLM 语义匹配/理由润色；四维证据；批量建议；采纳/手选留痕
 - [x] D1 本轮：技能族匹配（后端/前端/文档等同义词，不再只靠字面子串）、候选人对比解释、推荐历史中文状态、可重复演示种子 `scripts/seed_stage2_demo.py`
-- [ ] D1 待联调：真实 LLM/Embedding Key 下的语义质量（无 `.env` 时自动走规则路径，不阻塞演示）
+- [x] D1 已接入真实 LLM：StepFun `step-3.7-flash`，语义匹配与理由润色已验证；无 `.env` 时仍自动回退规则路径
 - [x] D2：`/members/load` 与 `/risks`（本轮冻结）
 - [x] D3：`/weekly-report`（本轮冻结）
 - [x] D4：Agent 只读项目事实（本轮冻结）

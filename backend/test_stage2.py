@@ -16,6 +16,9 @@ def _account(client: TestClient, name: str, email: str) -> dict:
 
 def test_stage2_recommendation_load_risks_and_weekly(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "DB_PATH", tmp_path / "stage2.db")
+    monkeypatch.setenv("RECOMMEND_SKILL_MODE", "rule")
+    monkeypatch.setenv("RECOMMEND_USE_LLM_SKILL", "false")
+    monkeypatch.setenv("RECOMMEND_USE_LLM_REASON", "false")
     api.init_db()
     owner, backend_dev, frontend_dev = _client(), _client(), _client()
     _account(owner, "组长", "owner-s2@example.com")
