@@ -73,10 +73,25 @@ def contribution_report(project_id: int, request: Request) -> dict[str, Any]:
 
 
 @router.get("/api/projects/{project_id}/weekly-report")
-def weekly_report(project_id: int, request: Request, start_date: Optional[date] = None, end_date: Optional[date] = None, format: Literal["json", "markdown"] = "json") -> Any:
-    conn = db(); ensure_project_access(conn, project_id, request); conn.close(); start, end = _week_bounds(start_date, end_date); data = internal_weekly_report(project_id, start, end)
+def weekly_report(
+    project_id: int, request: Request, week_start: Optional[date] = None,
+    start_date: Optional[date] = None, end_date: Optional[date] = None,
+    refresh: bool = False, format: Literal["json", "markdown"] = "json",
+) -> Any:
+    conn = db(); _, user, _ = ensure_project_access(conn, project_id, request); conn.close()
+    actor_id = user["id"] if user is not None else None
+    if week_start is None and (start_date is not None or end_date is not None):
+        start, _ = _week_bounds(start_date, end_date)  # 兼容旧参数，统一按周一归一化
+        week_start = start
+    data = get_weekly_report(project_id, week_start=week_start, refresh=refresh, actor_id=actor_id)
     if format == "markdown": return PlainTextResponse(_weekly_markdown(data), media_type="text/markdown; charset=utf-8")
     return data
+
+
+@router.get("/api/projects/{project_id}/weekly-report/history")
+def weekly_report_history(project_id: int, request: Request, limit: int = Query(default=20, ge=1, le=100), before: Optional[date] = None) -> dict[str, Any]:
+    conn = db(); ensure_project_access(conn, project_id, request); conn.close()
+    return list_weekly_reports(project_id, limit=limit, before=before)
 
 
 @router.get("/api/projects/{project_id}/report/export")

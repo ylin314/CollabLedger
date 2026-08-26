@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.models import Base
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = r'''
 CREATE TABLE IF NOT EXISTS users (
@@ -179,6 +179,21 @@ CREATE TABLE IF NOT EXISTS audit_logs (
  request_method TEXT, request_path TEXT, ip_address TEXT, user_agent TEXT, metadata TEXT,
  created_at TEXT NOT NULL, FOREIGN KEY(actor_id) REFERENCES users(id) ON DELETE SET NULL,
  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS weekly_reports (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ project_id INTEGER NOT NULL,
+ period_start TEXT NOT NULL,          -- YYYY-MM-DD(周一)
+ period_end TEXT NOT NULL,            -- YYYY-MM-DD(周日)
+ payload TEXT NOT NULL DEFAULT '{}',  -- 完整周报 JSON
+ source TEXT NOT NULL DEFAULT 'rule', -- llm | rule | mixed
+ llm_error TEXT,                      -- 记录 LLM 失败原因(可空)
+ created_by INTEGER,                  -- 首次触发生成/刷新的用户
+ created_at TEXT NOT NULL,
+ updated_at TEXT,
+ UNIQUE(project_id, period_start, period_end),
+ FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+ FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
 );
 '''
 

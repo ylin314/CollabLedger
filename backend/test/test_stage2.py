@@ -84,4 +84,34 @@ def test_stage2_recommendation_load_risks_and_weekly(tmp_path, monkeypatch):
     assert history["items"]
     assert any(item["status"] in {"accept", "manual"} for item in history["items"])
 
+def test_weekly_report_persist_lookup_refresh_and_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "weekly-d3.db")
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("RECOMMEND_SKILL_MODE", "rule")
+    api.init_db()
+    owner, member = _client(), _client()
+    _account(owner, "周报组长", "weekly-owner@example.com")
+    member_user = _account(member, "周报成员", "weekly-member@example.com")
+    pid = owner.post("/api/projects", json={"name": "周报深化项目"}).json()["id"]
+    code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
+    assert member.post(f"/api/invitations/{code}/accept").status_code == 200
+    task = owner.post(f"/api/projects/{pid}/tasks", json={"title": "周报任务", "assignee_id": member_user["id"], "estimated_hours": 2}).json()
+    member.post(f"/api/tasks/{task['id']}/start", json={})
+    member.post(f"/api/tasks/{task['id']}/complete", json={"actual_hours": 1})
 
+    first = owner.get(f"/api/projects/{pid}/weekly-report").json()
+    assert first["stored"] is True and first["summary"]["tasks_completed"] == 1
+    assert first["source"] == "rule" and first["insight"] and first["members"][0]["summary"]
+    second = owner.get(f"/api/projects/{pid}/weekly-report").json()
+    assert second["stored"] is True and second["generated_at"] == first["generated_at"]
+
+    history = owner.get(f"/api/projects/{pid}/weekly-report/history").json()
+    assert history["count"] == 1 and history["items"][0]["period_start"] == first["period"]["week_start"]
+    assert history["items"][0]["tasks_completed"] == 1 and history["items"][0]["source"] == "rule"
+
+    refreshed = owner.get(f"/api/projects/{pid}/weekly-report", params={"refresh": "true"}).json()
+    assert refreshed["stored"] is True and refreshed["generated_at"] >= first["generated_at"]
+    history2 = owner.get(f"/api/projects/{pid}/weekly-report/history").json()
+    assert history2["count"] == 1
+    md = owner.get(f"/api/projects/{pid}/weekly-report", params={"format": "markdown"})
+    assert md.status_code == 200 and "## 成员产出" in md.text and "## 整体洞察" in md.text

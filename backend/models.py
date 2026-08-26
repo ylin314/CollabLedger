@@ -204,6 +204,15 @@ recommendation_events = table("recommendation_events",
     Column("selected_user_id", ForeignKey("users.id", ondelete="SET NULL")), Column("note", Text),
     Column("payload", Text, nullable=False, server_default=text("'{}'")), Column("created_at", String(40), nullable=False))
 
+weekly_reports = table("weekly_reports",
+    Column("id", Integer, primary_key=True), Column("project_id", ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("period_start", String(10), nullable=False), Column("period_end", String(10), nullable=False),
+    Column("payload", Text, nullable=False, server_default=text("'{}'")), Column("source", String(20), nullable=False, server_default=text("'rule'")),
+    Column("llm_error", Text), Column("created_by", ForeignKey("users.id", ondelete="SET NULL")),
+    Column("created_at", String(40), nullable=False), Column("updated_at", String(40)),
+    UniqueConstraint("project_id", "period_start", "period_end", name="uq_weekly_reports_project_period"))
+
+
 Index("idx_users_email", User.email)
 Index("idx_memberships_user", Membership.user_id, Membership.project_id)
 Index("idx_tasks_project", Task.project_id, Task.deleted_at, Task.status)
@@ -213,3 +222,4 @@ Index("idx_audit_project_time", AuditLog.project_id, AuditLog.created_at)
 Index("idx_agent_memory_project", agent_memory.c.project_id, agent_memory.c.session_id, agent_memory.c.id)
 Index("idx_recommendations_project", recommendations.c.project_id, recommendations.c.task_id, recommendations.c.created_at)
 Index("idx_recommendation_events_project", recommendation_events.c.project_id, recommendation_events.c.created_at)
+Index("idx_weekly_reports_project", weekly_reports.c.project_id, weekly_reports.c.period_start)

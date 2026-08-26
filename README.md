@@ -152,7 +152,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 | 阶段 | 目标 | 状态 | 说明 |
 | --- | --- | --- | --- |
 | 阶段一 基础功能 P0 | 注册登录、项目、邀请、任务、打卡、评价、看板 | 已完成 | ly/dkd/czc 已形成真实协作闭环 |
-| 阶段二 AI 功能 P1 | 推荐、负载、匹配度、风险、周报 | rxc 推进中 | D1 已加深：语义匹配、四维拆开、排除原因、采纳留痕、批量建议；D2-D4 本轮冻结 |
+| 阶段二 AI 功能 P1 | 推荐、负载、匹配度、风险、周报 | rxc 推进中 | D1 已加深：语义匹配、四维拆开、排除原因、采纳留痕、批量建议；D3 已深化：LLM 逐成员摘要与整体洞察、历史周报落库与回看、refresh 覆盖、失败规则回退 |
 | 阶段三 贡献系统 P1 | 手动贡献 + 外部平台接入 | 部分完成 | 手动贡献/确认/争议已有；GitHub 等接入未做 |
 | 阶段四 长期协作 P2 | 历史项目、画像、跨项目授权 | 未开始 | 归档接口有雏形，画像页不要用假数据 |
 
@@ -183,7 +183,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 - [x] D1 已接入真实 LLM：StepFun `step-3.7-flash`，语义匹配与理由润色已验证；无 `.env` 时仍自动回退规则路径
 - [x] D1 深化二轮：LLM 理由注入任务描述+四维事实（数值化理由、低匹配候选指明方向）；前端 AI 降级提示（degrade-note）；推荐卡片结构化证据标签（技能族/样本数/负载/来源）；推荐历史页展示批量/单任务、来源、采纳人、改派对象
 - [x] D2：`/members/load` 与 `/risks`（本轮冻结）
-- [x] D3：`/weekly-report`（本轮冻结）
+- [x] D3 深化：`/weekly-report` LLM 增强 + 历史留痕（`weekly-reports` 表、`week_start`/`refresh`、`/weekly-report/history`）
 - [x] D4：Agent 只读项目事实（本轮冻结）
 - [ ] D5：GitHub / 飞书 / 腾讯文档接入（等 dkd 的 B6 稳定后做，不阻塞阶段二演示）
 - [ ] D6：长期画像（阶段四）
@@ -198,6 +198,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 - `GET /api/projects/{id}/members/load`
 - `GET /api/projects/{id}/risks`
 - `GET /api/projects/{id}/weekly-report`
+- `GET /api/projects/{id}/weekly-report/history`
 - `POST /api/projects/{id}/agent/chat`
 
 本地验证：

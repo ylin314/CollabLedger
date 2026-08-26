@@ -45,7 +45,7 @@ def downgrade() -> None:
     for table in (
         "audit_logs", "recommendation_events", "recommendations", "agent_messages", "agent_sessions", "sync_jobs", "external_events",
         "project_integrations", "platform_connections", "agent_memory", "task_review_history", "task_reviews",
-        "task_checkins", "quality_reviews", "work_logs", "project_invitations", "auth_sessions", "contributions",
+        "task_checkins", "quality_reviews", "work_logs", "project_invitations", "auth_sessions", "contributions", "weekly_reports",
         "task_logs", "tasks", "memberships", "projects", "users",
     ):
         bind.exec_driver_sql(f"DROP TABLE IF EXISTS {table}")

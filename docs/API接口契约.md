@@ -1373,9 +1373,18 @@ Query 参数：
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `start_date` | date | 否 | 默认本周一 |
-| `end_date` | date | 否 | 默认本周日 |
+| `week_start` | date | 否 | 默认本周周一；格式非法返回 422；传入后按周一归一化 |
+| `start_date` | date | 否 | 兼容旧参数；与 `end_date` 同传时按周一归一化后视作 `week_start` |
+| `end_date` | date | 否 | 兼容旧参数 |
+| `refresh` | bool | 否 | `true` 时强制重新生成并覆盖该周期（不产生重复行） |
 | `format` | string | 否 | `json` 或 `markdown`，默认 `json` |
+
+行为：
+
+- 首次访问某周：基于真实数据实时生成（LLM 逐成员摘要 + 整体洞察）并落库 `weekly_reports`，返回 `stored=true`。
+- 再次访问同周：直接读库返回（除非 `refresh=true`）。
+- LLM 任一段失败或未配置：该段回退规则文本，整体 `source` 取 `llm | mixed | rule`，`llm_error` 记录失败原因但不阻塞接口。
+- 回看上周：传 `week_start=<上周周一>` 即可，未生成过则实时生成并落库。
 
 成功响应：`200 OK`
 
@@ -1385,7 +1394,8 @@ Query 参数：
   "project_name": "软件工程课程大作业",
   "period": {
     "start_date": "2026-08-24",
-    "end_date": "2026-08-30"
+    "end_date": "2026-08-30",
+    "week_start": "2026-08-24"
   },
   "summary": {
     "tasks_total": 18,
@@ -1406,9 +1416,16 @@ Query 参数：
       "completed_tasks": 2,
       "active_tasks": 2,
       "checkin_count": 4,
-      "actual_hours": 12.5
+      "actual_hours": 12.5,
+      "summary": "本周完成 2 项任务，累计工时 12.5 小时",
+      "summary_source": "llm"
     }
   ],
+  "insight": "本周整体进度正常，主要风险为……建议……",
+  "insight_source": "llm",
+  "source": "llm",
+  "llm_error": null,
+  "stored": true,
   "generated_at": "2026-08-25T10:00:00Z"
 }
 ```
@@ -1418,6 +1435,24 @@ Query 参数：
 - 周报只能基于真实项目数据生成
 - 不做成员排名
 - 不输出人格评价或“摸鱼”判断
+
+### 9.4.1 周报历史
+
+```http
+GET /api/projects/{project_id}/weekly-report/history
+```
+
+权限：项目成员。
+
+Query 参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `limit` | int | 否 | 默认 20，最大 100 |
+| `before` | date | 否 | 只返回周期开始早于该日期的记录 |
+
+成功响应：`200 OK`，`items` 按 `period_start` 倒序，每项含 `id / period_start / period_end / source / llm_error / created_by / created_at / updated_at / tasks_completed / checkin_count / risks_count`（不含大 payload）。
+
 
 ### 9.5 获取项目报告
 
