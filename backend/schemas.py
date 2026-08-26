@@ -32,6 +32,10 @@ class UserUpdate(BaseModel):
     status: Optional[Literal["online", "offline", "busy"]] = None
 
 
+class MentorIn(BaseModel):
+    email: Optional[str] = Field(default=None, max_length=254)
+
+
 class ProjectIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     project_type: Optional[str] = Field(default=None, max_length=100)
@@ -39,6 +43,7 @@ class ProjectIn(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     owner_id: Optional[int] = None
+    mentors: list[MentorIn] = Field(default_factory=list)
 
 
 class ProjectUpdate(BaseModel):
@@ -68,6 +73,7 @@ class InvitationIn(BaseModel):
     max_uses: int = Field(default=10, ge=1, le=10000)
     email: Optional[str] = None
     expires_days: Optional[int] = Field(default=None, ge=1, le=365)
+    is_mentor: bool = False
 
 
 class AcceptInvitationIn(BaseModel):
@@ -79,6 +85,7 @@ class TaskIn(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=5000)
     assignee_id: Optional[int] = None
+    reviewer_id: Optional[int] = None
     task_type: Optional[str] = Field(default=None, max_length=100)
     priority: Literal["low", "medium", "high"] = "medium"
     due_date: Optional[date] = None
@@ -90,6 +97,7 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=5000)
     assignee_id: Optional[int] = None
+    reviewer_id: Optional[int] = None
     task_type: Optional[str] = Field(default=None, max_length=100)
     priority: Optional[Literal["low", "medium", "high"]] = None
     due_date: Optional[date] = None

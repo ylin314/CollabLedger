@@ -2,7 +2,7 @@
 
 > 负责人：B（核心业务后端）
 > 覆盖范围：B1 项目管理、B2 成员与邀请、B3 任务系统、B4 打卡、B5 质量评价、B6 贡献账本、B7 历史项目
-> 状态：**接口约定已确定**；已实现部分与当前代码对齐（`backend/routers/projects.py`、`tasks.py`、`contributions.py`），导师邀请链路按本文约定实现。
+> 状态：**接口约定已确定并已实现**；与当前代码对齐（`backend/routers/projects.py`、`tasks.py`、`contributions.py`）。任务级评审人（`reviewer_id`）与导师观察者邀请链路已按本文（含第 10 章）实现。
 > 用途：前端（C）、AI/分析（D）对接 B 模块时以本文档为准。与 `docs/API接口契约.md` 冲突时，本文档描述“已实现真实行为”，契约文档描述“目标态”。
 
 ---
@@ -367,11 +367,12 @@ POST /api/projects/{project_id}/invitations
   "max_uses": 10,
   "used_count": 0,
   "revoked": false,
+  "is_mentor": false,
   "invite_url": "/invite/ABC123XYZ"
 }
 ```
 
-说明：邀请码为 12 位大写字符串。前端拼接邀请链接可用 `invite_url`。
+说明：邀请码为 12 位大写字符串。前端拼接邀请链接可用 `invite_url`。`is_mentor` 表示该邀请是否为导师观察者邀请（默认 `false`，仅前端标记用，不改变权限，见 10.2）。
 
 ### 3.5 获取邀请列表
 
@@ -771,15 +772,14 @@ Query：`user_id`、`task_id`、`start_date`、`end_date`、`page`、`page_size`
 POST /api/tasks/{task_id}/review
 ```
 
-权限：`owner`。归档项目 `409`。
+权限：`owner` 或该任务的评审人（`reviewer_id`）。归档项目 `409`。
 
-> 权限现状（已实现）：只允许 `owner`。owner 评自己的任务是允许的；非 owner 一律进不来。
+> 权限（已实现）：任务级评审人已落地，本接口权限为：
 >
-引入任务级评审人后，本接口权限扩展为：
->
-> - 任务 `reviewer_id` 为空 → 只有 owner 能评价（同现状）。
-> - 任务 `reviewer_id` 非空 → owner **或**该评审人能评价。评审人可以是以 viewer 身份加入的导师观察者。
+> - 任务 `reviewer_id` 为空 → 只有 owner 能评价。
+> - 任务 `reviewer_id` 非空 → owner **或**该评审人能评价。评审人可以是以 viewer 身份加入的导师观察者（评价接口最低角色已放宽到 viewer，再按 owner/评审人做判定）。
 > - 仍保留「非 owner 不能评价自己负责的任务」的约束（即评审人不应同时是该任务负责人）。
+> - 非 owner 且非该任务评审人 → `403`（“只有 owner 或该任务的评审人可以评价”）。
 
 请求：
 
@@ -993,9 +993,9 @@ DELETE /api/contributions/{contribution_id}
 
 ---
 
-## 10. 附录：评审人与导师观察者（目标设计）
+## 10. 附录：评审人与导师观察者（已实现）
 
-> 状态：**已决策的目标设计，代码尚未实现**。规则已确定，对具体字段/接口的影响已融入前面各章（角色表 1.3、创建项目 2.2、任务对象 4.2、创建任务 4.4、更新任务 4.6、评价 6.2）。本附录做集中说明，供 A（权限/迁移）、C（前端）、D（统计口径）对齐。落地前前端/AI 不要假设已上线。
+> 状态：**已实现并对齐代码**。规则已落地，对具体字段/接口的影响见前面各章（角色表 1.3、创建项目 2.2、任务对象 4.2、创建任务 4.4、更新任务 4.6、评价 6.2）。本附录做集中说明，供 A（权限/迁移）、C（前端）、D（统计口径）对齐。数据库 schema 版本升至 `4`（`tasks.reviewer_id`、`project_invitations.is_mentor`、`task_review_history.updated_at`）。
 
 ### 10.0 为什么需要这两个身份
 
@@ -1017,9 +1017,9 @@ DELETE /api/contributions/{contribution_id}
 - 评审人须为项目成员（含以 viewer 身份加入的导师观察者）；建议与负责人不同，避免自评。
 - 仍保留「非 owner 不能评价自己负责的任务」的约束。
 
-数据模型建议：`tasks` 增加可空外键字段 `reviewer_id`（→ users）。无需独立授权表——评审授权就等于「被设为某任务的 reviewer」，天然可追溯（记录在任务上，变更进任务日志）。
+数据模型（已实现）：`tasks` 增加可空外键字段 `reviewer_id`（→ users，`ON DELETE SET NULL`）。无需独立授权表——评审授权就等于「被设为某任务的 reviewer」，天然可追溯（记录在任务上，变更进任务日志）。
 
-涉及接口（落地时改）：4.4 创建任务加 `reviewer_id`；4.6 更新任务允许 owner/创建者改 `reviewer_id`；4.2 任务对象返回 `reviewer_id/reviewer_name`；6.2 评价权限按上表放宽。
+涉及接口（已实现）：4.4 创建任务加 `reviewer_id`；4.6 更新任务允许 owner/创建者改 `reviewer_id`（传 `null` 取消）；4.2 任务对象返回 `reviewer_id/reviewer_name`；6.2 评价权限按上表放宽。
 
 ### 10.2 导师观察者（mentor）
 
@@ -1042,13 +1042,19 @@ DELETE /api/contributions/{contribution_id}
 
 - mentor 复用现有 `viewer` 角色，**不新增顶层角色**，`ROLE_LEVEL` 不变；评审能力来自「被某任务指定为 reviewer」，与角色解耦。
 - 加入方式：owner 发 `role="viewer"` 的邀请链接（见 3.4），导师本人确认接受后加入；不走「直接添加成员」路径，保证外部人自愿加入。
-- 与 D 对齐的统计口径：导师是 viewer，本就不进负载分析和推荐候选（推荐只看可被指派的成员）。若前端要在成员列表区分「导师」标签，可选加一个 `is_mentor` 标记字段，需 A/C/D 确认。
+- 与 D 对齐的统计口径：导师是 viewer，本就不进负载分析和推荐候选（推荐只看可被指派的成员）。
+- 导师标记：`project_invitations` 已加 `is_mentor` 字段（默认 `0`）。创建项目时 `mentors` 列表会生成 `role="viewer"`、`max_uses=1`、`is_mentor=1` 的邀请；`POST /api/projects/{id}/invitations` 也接受 `is_mentor=true`。该标记仅用于前端区分「导师」与普通 viewer，不改变权限；接受邀请后成员仍以 `viewer` 身份加入（`memberships` 未新增标记字段）。
 
-### 10.3 落地前需与 A 对齐的点
+### 10.3 落地记录与仍需与 A 对齐的点
 
-1. `tasks.reviewer_id` 字段的数据库迁移（A4 迁移脚本），以及在 `PERMISSION_MODEL.md` 补充评审权规则。
-2. 评价接口（6.2）权限判断改为「owner 或该任务 reviewer」，需同步 `PERMISSION_MODEL.md`。
-3. 是否在 `memberships` 加 `is_mentor` 标记，用于前端区分「导师」与普通 viewer（不加则两者在数据上无差别）。
-4. 是否允许同一用户在同项目既是 member 又被设为其他任务的 reviewer（建议允许，但仍禁止评审自己负责的任务）。
+已实现（B 侧）：
 
-> 以上为目标设计，尚未改动任何代码。实现时由 B 排期，并同步更新本文档、`API接口契约.md`、`PERMISSION_MODEL.md`。
+1. `tasks.reviewer_id` 可空外键（`db.py` SCHEMA_SQL + 前向迁移 `_add_columns`，schema 版本升至 `4`）。
+2. 评价接口（6.2）权限改为「owner 或该任务 reviewer」，最低角色放宽到 viewer 后再判定。
+3. `project_invitations.is_mentor` 标记（默认 `0`），创建项目 `mentors` 与邀请接口 `is_mentor` 均已支持。评审授权记录在任务上（变更进任务日志），未新增授权表。
+
+仍需与 A 对齐：
+
+1. 在 `PERMISSION_MODEL.md` 补充「任务级评审权」规则（owner 或该任务 reviewer 可评价）。
+2. `memberships` 未加 `is_mentor` 标记：导师与普通 viewer 在成员表层面无差别，仅邀请记录带标记。若前端需在成员列表直接区分导师，再评估是否加成员级标记。
+3. 已允许同一用户既是 member 又被设为其他任务 reviewer，但仍禁止评审自己负责的任务。

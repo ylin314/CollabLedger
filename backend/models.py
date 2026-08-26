@@ -61,6 +61,7 @@ class Task(Base):
     task_type: Mapped[str | None] = mapped_column(String(100))
     priority: Mapped[str] = mapped_column(String(20), server_default=text("'medium'"), nullable=False)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
     deleted_at: Mapped[str | None] = mapped_column(String(40))
@@ -119,7 +120,7 @@ project_invitations = table("project_invitations",
     Column("role", String(20), nullable=False, server_default=text("'member'")), Column("expires_at", String(40), nullable=False),
     Column("accepted_at", String(40)), Column("created_at", String(40), nullable=False), Column("max_uses", Integer, nullable=False, server_default=text("1")),
     Column("used_count", Integer, nullable=False, server_default=text("0")), Column("revoked", Integer, nullable=False, server_default=text("0")),
-    Column("revoked_at", String(40)), Column("updated_at", String(40)))
+    Column("revoked_at", String(40)), Column("updated_at", String(40)), Column("is_mentor", Integer, nullable=False, server_default=text("0")))
 
 work_logs = table("work_logs",
     Column("id", Integer, primary_key=True), Column("project_id", ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
@@ -148,7 +149,7 @@ task_reviews = table("task_reviews",
 task_review_history = table("task_review_history",
     Column("id", Integer, primary_key=True), Column("task_id", ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False),
     Column("reviewer_id", ForeignKey("users.id", ondelete="CASCADE"), nullable=False), Column("quality", Float, nullable=False),
-    Column("comment", Text), Column("created_at", String(40), nullable=False))
+    Column("comment", Text), Column("created_at", String(40), nullable=False), Column("updated_at", String(40)))
 
 agent_memory = table("agent_memory",
     Column("id", Integer, primary_key=True), Column("project_id", Integer, nullable=False),

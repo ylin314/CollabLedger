@@ -44,7 +44,7 @@ def list_tasks(
     total = conn.execute(f"SELECT COUNT(*) n FROM tasks t WHERE {condition}", args).fetchone()["n"]
     sort_sql = "CASE t.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END" if sort == "priority" else f"t.{sort}"
     offset, limit = pagination(page, page_size)
-    rows = conn.execute(f"SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE {condition} ORDER BY {sort_sql} {order.upper()},t.id {order.upper()} LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall(); conn.close()
+    rows = conn.execute(f"SELECT t.*,u.name assignee_name,r.name reviewer_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN users r ON r.id=t.reviewer_id WHERE {condition} ORDER BY {sort_sql} {order.upper()},t.id {order.upper()} LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall(); conn.close()
     return {"items": [as_task(row) for row in rows], "page": page, "page_size": page_size, "total": total}
 
 
@@ -57,16 +57,17 @@ def create_task(project_id: int, payload: TaskIn, request: Request = None) -> di
     ensure_writable(project)
     if payload.status and payload.status not in TASK_STATUSES: conn.close(); fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "status", "message": "任务状态不正确"}])
     if payload.assignee_id is not None: ensure_member(conn, project_id, payload.assignee_id)
+    if payload.reviewer_id is not None: ensure_member(conn, project_id, payload.reviewer_id)
     status = payload.status if request is None and payload.status else ("assigned" if payload.assignee_id is not None else "unassigned")
     actor_id = user["id"] if user is not None else (payload.owner_id if hasattr(payload, "owner_id") else None)
     stamp = now_iso()
     cur = conn.execute(
-        """INSERT INTO tasks(project_id,title,description,assignee_id,status,due_date,estimated_hours,actual_hours,quality,task_type,priority,created_by,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,NULL,NULL,?,?,?,?,?)""",
-        (project_id, payload.title, payload.description, payload.assignee_id, status, payload.due_date.isoformat() if payload.due_date else None, payload.estimated_hours, payload.task_type, payload.priority, actor_id, stamp, stamp),
+        """INSERT INTO tasks(project_id,title,description,assignee_id,status,due_date,estimated_hours,actual_hours,quality,task_type,priority,created_by,reviewer_id,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,NULL,NULL,?,?,?,?,?,?)""",
+        (project_id, payload.title, payload.description, payload.assignee_id, status, payload.due_date.isoformat() if payload.due_date else None, payload.estimated_hours, payload.task_type, payload.priority, actor_id, payload.reviewer_id, stamp, stamp),
     )
     _task_log(conn, cur.lastrowid, actor_id, "created", None, status, None); conn.commit()
-    row = conn.execute("SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE t.id=?", (cur.lastrowid,)).fetchone(); conn.close(); return as_task(row)
+    row = task_row(conn, cur.lastrowid); conn.close(); return as_task(row)
 
 
 @router.get("/api/tasks/{task_id}")
@@ -89,10 +90,18 @@ def update_task(task_id: int, payload: TaskUpdate, request: Request = None) -> d
         fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": field, "message": "请使用专用状态或评价接口"}])
     for key, value in list(raw.items()):
         if isinstance(value, date): raw[key] = value.isoformat()
+    if "reviewer_id" in raw:
+        is_creator = user is not None and row["created_by"] == user["id"]
+        if user is not None and role != "owner" and not is_creator:
+            conn.close(); fail(403, "FORBIDDEN", "只有 owner 或任务创建者可以修改评审人")
+        if raw["reviewer_id"] is not None: ensure_member(conn, row["project_id"], raw["reviewer_id"])
     if user is not None and role != "owner":
-        if row["assignee_id"] != user["id"]: conn.close(); fail(403, "FORBIDDEN", "只能更新自己负责的任务")
-        forbidden = set(raw) - {"actual_hours"}
-        if forbidden: conn.close(); fail(403, "FORBIDDEN", "普通成员只能更新任务执行字段")
+        is_creator = row["created_by"] == user["id"]
+        non_reviewer_fields = set(raw) - ({"reviewer_id"} if is_creator else set())
+        if non_reviewer_fields:
+            if row["assignee_id"] != user["id"]: conn.close(); fail(403, "FORBIDDEN", "只能更新自己负责的任务")
+            forbidden = non_reviewer_fields - {"actual_hours"}
+            if forbidden: conn.close(); fail(403, "FORBIDDEN", "普通成员只能更新任务执行字段")
     if "status" in raw and raw["status"] not in TASK_STATUSES: conn.close(); fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "status", "message": "任务状态不正确"}])
     if "assignee_id" in raw and raw["assignee_id"] is not None: ensure_member(conn, row["project_id"], raw["assignee_id"])
     if "assignee_id" in raw and "status" not in raw:
@@ -184,7 +193,9 @@ def task_logs(task_id: int, request: Request) -> dict[str, Any]:
 
 @router.delete("/api/tasks/{task_id}", status_code=204)
 def delete_task(task_id: int, request: Request) -> Response:
-    conn = db(); row = task_row(conn, task_id); project, _, _ = ensure_project_access(conn, row["project_id"], request, "owner"); ensure_writable(project)
+    conn = db(); row = task_row(conn, task_id); project, user, role = ensure_project_access(conn, row["project_id"], request, "viewer"); ensure_writable(project)
+    if user is not None and role != "owner" and row["created_by"] != user["id"]:
+        conn.close(); fail(403, "FORBIDDEN", "只有 owner 或任务创建人可以删除任务")
     conn.execute("UPDATE tasks SET deleted_at=?,updated_at=? WHERE id=?", (now_iso(), now_iso(), task_id)); conn.commit(); conn.close(); return Response(status_code=204)
 
 
@@ -222,11 +233,13 @@ def list_project_checkins(
 @router.post("/api/tasks/{task_id}/review")
 def review_task(task_id: int, payload: ReviewIn, response: Response, request: Request) -> dict[str, Any]:
     if abs(payload.quality * 10 - round(payload.quality * 10)) > 1e-8: fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "quality", "message": "质量评分最多一位小数"}])
-    conn = db(); task = task_row(conn, task_id); project, user, role = ensure_project_access(conn, task["project_id"], request, "owner"); ensure_writable(project); assert user is not None
+    conn = db(); task = task_row(conn, task_id); project, user, role = ensure_project_access(conn, task["project_id"], request, "viewer"); ensure_writable(project); assert user is not None
+    is_reviewer = task["reviewer_id"] is not None and task["reviewer_id"] == user["id"]
+    if role != "owner" and not is_reviewer: conn.close(); fail(403, "FORBIDDEN", "只有 owner 或该任务的评审人可以评价")
     if task["status"] != "completed": conn.close(); fail(409, "CONFLICT", "只有已完成任务可以评价")
     if task["assignee_id"] == user["id"] and role != "owner": conn.close(); fail(403, "FORBIDDEN", "不能评价自己的任务")
     existing = conn.execute("SELECT id FROM task_reviews WHERE task_id=?", (task_id,)).fetchone(); stamp = now_iso()
-    conn.execute("INSERT INTO task_review_history(task_id,reviewer_id,quality,comment,created_at) VALUES (?,?,?,?,?)", (task_id, user["id"], payload.quality, payload.comment, stamp))
+    conn.execute("INSERT INTO task_review_history(task_id,reviewer_id,quality,comment,created_at,updated_at) VALUES (?,?,?,?,?,?)", (task_id, user["id"], payload.quality, payload.comment, stamp, stamp))
     if existing:
         conn.execute("UPDATE task_reviews SET reviewer_id=?,quality=?,comment=?,updated_at=? WHERE task_id=?", (user["id"], payload.quality, payload.comment, stamp, task_id)); response.status_code = 200
     else:
