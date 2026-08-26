@@ -121,7 +121,7 @@ def pagination(page: int, page_size: int) -> tuple[int, int]:
 
 def as_task(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     out = dict(row)
-    return {key: out.get(key) for key in ("id", "project_id", "title", "description", "assignee_id", "assignee_name", "status", "task_type", "priority", "due_date", "estimated_hours", "actual_hours", "quality", "created_by", "created_at", "updated_at")}
+    return {key: out.get(key) for key in ("id", "project_id", "title", "description", "assignee_id", "assignee_name", "status", "task_type", "priority", "due_date", "estimated_hours", "actual_hours", "quality", "reviewer_id", "reviewer_name", "created_by", "created_at", "updated_at")}
 
 
 def as_contribution(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:

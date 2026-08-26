@@ -6,7 +6,7 @@ from typing import Any
 from backend.core.errors import fail
 
 def task_row(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row:
-    row = conn.execute("SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE t.id=? AND t.deleted_at IS NULL", (task_id,)).fetchone()
+    row = conn.execute("SELECT t.*,u.name assignee_name,r.name reviewer_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN users r ON r.id=t.reviewer_id WHERE t.id=? AND t.deleted_at IS NULL", (task_id,)).fetchone()
     if not row:
         fail(404, "NOT_FOUND", "任务不存在")
     return row
