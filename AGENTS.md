@@ -43,7 +43,7 @@ pytest backend/
 
 ## Testing Guidelines
 
-- 框架：`pytest` + FastAPI `TestClient`，测试文件位于 `backend/test_*.py`。
+- 框架：`pytest` + FastAPI `TestClient`，测试文件位于 `backend/test/`。
 - 命名：测试函数以 `test_` 开头，描述单一行为（如 `test_core_flow`）。
 - 运行：`pytest backend/`；测试应使用临时数据库（`tmp_path` + `monkeypatch`），不依赖真实 `.env` 或外部 LLM。
 
