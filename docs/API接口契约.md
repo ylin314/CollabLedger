@@ -309,7 +309,7 @@ POST /api/projects
 
 - `name`：必填，1-100 字符
 - `end_date` 不能早于 `start_date`
-- `mentors`：可选的导师邀请目标列表；每项包含导师邮箱。创建项目时仅生成并发送 `role="viewer"` 邀请链接，不直接加入导师；导师接受链接后才以 `viewer` 身份加入。
+- `mentors`：可选的导师邀请目标列表；每项必须提供格式合法的导师邮箱。创建项目时仅生成并发送 `role="viewer"` 邀请链接，不直接加入导师；导师接受链接后才以 `viewer` 身份加入。
 
 成功响应：`201 Created`
 
@@ -638,7 +638,7 @@ unassigned → assigned → in_progress → completed
 }
 ```
 
-> 📌 计划中（代码未实现）：任务对象将新增 `reviewer_id` / `reviewer_name`（可空），表示该任务的授权评审人。创建时指定或留空，owner 或任务创建者可改。详见 `B_业务接口文档.md` 4.2 / 4.4 / 4.6。
+任务对象已返回 `reviewer_id` / `reviewer_name`（可空），表示该任务的授权评审人。创建时可指定，owner 或任务创建者可改。详见 `B_业务接口文档.md` 4.2 / 4.4 / 4.6。
 
 ### 5.3 获取任务列表
 
@@ -705,7 +705,7 @@ POST /api/projects/{project_id}/tasks
 - 指定负责人时，负责人必须是项目成员
 - 归档项目不允许创建任务
 
-> 📌 计划中（代码未实现）：可传 `reviewer_id`（可选）指定任务评审人，须为项目成员；留空则默认仅 owner 评审。后续由 owner 或任务创建者修改。详见 `B_业务接口文档.md` 10.1。
+可传 `reviewer_id`（可选）指定任务评审人，须为项目成员；留空则默认仅 owner 评审。owner 或任务创建者可修改。详见 `B_业务接口文档.md` 10.1。
 
 ### 5.5 获取任务详情
 
@@ -962,8 +962,7 @@ POST /api/tasks/{task_id}/review
 
 权限：`owner` 或被授权评审人。
 
-> 现状（已实现）：**仅 owner** 可评价。
-> 📌 计划中（代码未实现）：引入任务级评审人后放宽为——任务无评审人时仅 owner；任务有 `reviewer_id` 时 owner 或该评审人可评价。详见 `B_业务接口文档.md` 6.2 / 10.1。
+任务无评审人时仅 owner 可评价；任务有 `reviewer_id` 时 owner 或该评审人可评价。详见 `B_业务接口文档.md` 6.2 / 10.1。
 
 请求：
 

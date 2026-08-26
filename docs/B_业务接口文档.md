@@ -167,13 +167,13 @@ POST /api/projects
 - `project_type`：可选，≤100 字符
 - `description`：可选，≤5000 字符
 - `start_date` / `end_date`：可选；若都填，`end_date` 不能早于 `start_date`
-- `mentors`：可选，导师邀请目标列表；每项目前支持 `email`，用于定向发送邀请。
+- `mentors`：可选，导师邀请目标列表；每项必须提供格式合法的 `email`，用于定向发送邀请。
 
 响应 `201`：返回**项目详情对象**（结构同 2.3）；传入 `mentors` 时，响应增加 `mentor_invitations` 列表，返回为每位导师生成的邀请对象及 `invite_url`。
 
 导师处理规则：**创建项目时不直接把导师加入成员表**。系统为 `mentors` 中的每位导师生成一个 `role="viewer"`、默认单次使用且可按 `email` 定向的邀请链接；链接发送给导师后，由导师本人确认接受，接受成功后才以 `viewer` 身份加入项目。导师加入后可被指定为任务评审人（见 4.2）。
 
-错误：`422 VALIDATION_ERROR`（名称为空 / 日期区间非法）。
+错误：`422 VALIDATION_ERROR`（名称为空 / 日期区间非法 / 导师邮箱缺失或格式不正确）。
 
 ### 2.3 获取项目详情
 
@@ -354,7 +354,7 @@ POST /api/projects/{project_id}/invitations
 - `email`：可选，绑定后只有该邮箱用户能接受该邀请
 - `expires_days`：可选，若填则覆盖 `expires_in_hours`（= days × 24）
 
-邀请导师观察者使用本接口发送 `role="viewer"` 的邀请，建议带 `email` 定向到导师本人、`max_uses=1`。导师接受邀请后以 `viewer` 身份加入，可被指定为任务评审人（见 4.2）。可选的 `is_mentor=true` 标记仅用于前端区分导师与普通 viewer，不改变权限。
+邀请导师观察者使用本接口发送 `role="viewer"` 的邀请时，必须传入格式合法的 `email`；该邮箱会绑定收件人，账号邮箱为空或不匹配时均不能接受邀请。建议同时设定 `max_uses=1`。导师接受邀请后以 `viewer` 身份加入，可被指定为任务评审人（见 4.2）。可选的 `is_mentor=true` 标记仅用于前端区分导师与普通 viewer，不改变权限。
 
 响应 `201`：
 

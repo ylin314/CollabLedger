@@ -111,7 +111,7 @@
 
 ### 3.5 创建项目 `POST /api/projects` — 附带导师
 
-请求体新增可选字段 `mentors`（数组，元素目前仅 `email` 可选）：
+请求体新增可选字段 `mentors`（数组；每项的 `email` 必填且须为合法邮箱）：
 
 ```json
 {
@@ -128,13 +128,13 @@
 
 ### 3.6 创建邀请 `POST /api/projects/{project_id}/invitations`
 
-请求体新增可选字段 `is_mentor`（默认 `false`）：
+请求体新增可选字段 `is_mentor`（默认 `false`）；当其为 `true` 时，`email` 必填且须为合法邮箱：
 
 ```json
-{ "role": "viewer", "is_mentor": true }
+{ "role": "viewer", "is_mentor": true, "email": "mentor@example.com" }
 ```
 
-- 所有邀请对象（创建、列表、获取）的返回都新增 `is_mentor` 布尔字段。
+- 所有邀请对象（创建、列表、按邀请码获取）的返回都新增 `is_mentor` 布尔字段。
 - `is_mentor` 仅是标记，不改变邀请角色或权限；导师接受后仍以 `viewer` 身份加入。
 
 ---

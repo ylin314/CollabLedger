@@ -112,6 +112,7 @@ def test_invitation_response_has_is_mentor(monkeypatch, tmp_path):
     assert created["is_mentor"] is False
     listed = owner.get(f"/api/projects/{pid}/invitations").json()["items"]
     assert all("is_mentor" in item for item in listed)
+    assert owner.get(f"/api/invitations/{created['code']}").json()["is_mentor"] is False
 
 
 def test_invitation_code_is_12_uppercase_chars(monkeypatch, tmp_path):
