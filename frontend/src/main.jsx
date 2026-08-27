@@ -213,8 +213,55 @@ function TasksView({ tasks, members, onAction, onCreate, onRecommend, onBatch, c
 }
 function TaskCard({ task, onAction, onRecommend, canManageTask }) { const m = statusMeta[task.status]; const action = task.status === 'in_progress' ? 'complete' : task.status === 'assigned' ? 'start' : task.status === 'paused' ? 'resume' : null; return <article className="task-card"><div className="task-card-top"><span className={`tag ${m.tone}`}>{m.label}</span><button className="kebab">•••</button></div><h3>{task.title}</h3>{task.description && <p>{task.description}</p>}<div className="task-card-info"><span>◷ {formatDate(task.due_date)}</span><span>◒ {task.estimated_hours || '—'}h</span></div><div className="task-card-bottom">{task.assignee_name ? <span className="assignee-inline"><span className="tiny-avatar">{initials(task.assignee_name)}</span>{task.assignee_name}</span>  : (onRecommend ? <button className="assign-link" onClick={() => onRecommend(task)}>＋ 分配负责人</button> : <span>尚未分配</span>)}{action && canManageTask?.(task) && <button className="mini-action" onClick={() => onAction(task, action)}>{action === 'complete' ? '完成任务' : action === 'resume' ? '继续' : '开始'}</button>}</div></article> }
 
-function ContributionsView({ project, members, currentUser, role, canWrite, online, setProject, onToast }) { const [kind, setKind] = useState('all'); const [open, setOpen] = useState(false); const contributions = project.contributions || []; const list = kind === 'all' ? contributions : contributions.filter(c => c.kind === kind); async function save(data) { try { const c = await sendJson(`/api/projects/${project.id}/contributions`, { method: 'POST', body: JSON.stringify(data) }); setProject(p => ({ ...p, contributions: [c, ...(p.contributions || [])] })); onToast('贡献记录已保存') } catch (error) { onToast(error.message) } setOpen(false) } return <><PageTitle eyebrow="CONTRIBUTION LEDGER" title="贡献账本" desc="记录做了什么，而不是监控正在做什么。" action={canWrite ? <button className="primary-button" onClick={() => setOpen(true)}>＋ 记录贡献</button> : null}/><div className="privacy-banner"><span>◉</span><div><strong>这是一个公平秤，不是监控器</strong><p>成员只会被记录项目相关的产出：任务、代码、文档和会议。数据默认仅对项目组可见。</p></div><span className="sync-state">{online ? '● 已同步' : '◌ API 未连接'}</span></div><div className="ledger-summary"><Metric label="本周贡献" value={contributions.length} hint="条可追溯记录" trend="up" color="blue"/><Metric label="代码提交" value={contributions.filter(c => c.kind === 'code').reduce((a, c) => a + (c.quantity || 1), 0)} hint="次 commit / 变更" trend="up" color="purple"/><Metric label="活跃成员" value={new Set(contributions.map(c => c.user_id)).size} hint={`共 ${members.length} 位成员`} trend="neutral" color="green"/></div><div className="ledger-panel panel"><div className="ledger-header"><div className="filter-tabs compact">{[['all', '全部'], ['code', '代码'], ['document', '文档'], ['meeting', '会议'], ['research', '调研'], ['test', '测试'], ['design', '设计']].map(([id, label]) => <button key={id} className={kind === id ? 'active' : ''} onClick={() => setKind(id)}>{label}</button>)}</div><span className="ledger-note">按时间倒序</span></div><div className="ledger-list">{list.map((c, i) => <ContributionItem key={c.id} c={c} i={i}/>)}{!list.length && <div className="empty-state">还没有这类贡献记录</div>}</div></div>{open && <ContributionModal members={role === 'owner' ? members : members.filter(m => m.user_id === currentUser.id)} onClose={() => setOpen(false)} onSave={save}/>}</> }
-function ContributionItem({ c, i }) { const icons = { code: ['⌘', 'purple'], document: ['▤', 'blue'], meeting: ['◉', 'amber'], task: ['✓', 'green'], other: ['✦', 'slate'] }; const [icon, tone] = icons[c.kind] || icons.other; return <div className="contribution-item"><div className={`contribution-icon ${tone}`}>{icon}</div><div className="contribution-main"><strong>{c.title || '未命名贡献'}</strong><p>{c.description || '成员提交了一条项目产出记录'}</p><span>{c.user_name} · {formatDate(c.created_at)}</span></div><div className="contribution-qty"><strong>{c.quantity || 1}</strong><span>{c.kind === 'code' ? '次' : '项'}</span></div></div> }
+function ContributionsView({ project, members, currentUser, role, canWrite, online, setProject, onToast }) { const [kind, setKind] = useState('all'); const [open, setOpen] = useState(false); const contributions = project.contributions || []; const list = kind === 'all' ? contributions : contributions.filter(c => c.kind === kind); async function save(data) { try { const c = await sendJson(`/api/projects/${project.id}/contributions`, { method: 'POST', body: JSON.stringify(data) }); setProject(p => ({ ...p, contributions: [c, ...(p.contributions || [])] })); onToast('贡献记录已保存') } catch (error) { onToast(error.message) } setOpen(false) } return <><PageTitle eyebrow="CONTRIBUTION LEDGER" title="贡献账本" desc="记录做了什么，而不是监控正在做什么。" action={canWrite ? <button className="primary-button" onClick={() => setOpen(true)}>＋ 记录贡献</button> : null}/><GitHubIntegration project={project} onToast={onToast} onReload={() => loadProject(project.id)}/><div className="privacy-banner"><span>◉</span><div><strong>这是一个公平秤，不是监控器</strong><p>成员只会被记录项目相关的产出：任务、代码、文档和会议。数据默认仅对项目组可见。</p></div><span className="sync-state">{online ? '● 已同步' : '◌ API 未连接'}</span></div><div className="ledger-summary"><Metric label="本周贡献" value={contributions.length} hint="条可追溯记录" trend="up" color="blue"/><Metric label="代码提交" value={contributions.filter(c => c.kind === 'code').reduce((a, c) => a + (c.quantity || 1), 0)} hint="次 commit / 变更" trend="up" color="purple"/><Metric label="活跃成员" value={new Set(contributions.map(c => c.user_id)).size} hint={`共 ${members.length} 位成员`} trend="neutral" color="green"/></div><div className="ledger-panel panel"><div className="ledger-header"><div className="filter-tabs compact">{[['all', '全部'], ['code', '代码'], ['document', '文档'], ['meeting', '会议'], ['research', '调研'], ['test', '测试'], ['design', '设计']].map(([id, label]) => <button key={id} className={kind === id ? 'active' : ''} onClick={() => setKind(id)}>{label}</button>)}</div><span className="ledger-note">按时间倒序</span></div><div className="ledger-list">{list.map((c, i) => <ContributionItem key={c.id} c={c} i={i}/>)}{!list.length && <div className="empty-state">还没有这类贡献记录</div>}</div></div>{open && <ContributionModal members={role === 'owner' ? members : members.filter(m => m.user_id === currentUser.id)} onClose={() => setOpen(false)} onSave={save}/>}</> }
+function GitHubIntegration({ project, onToast, onReload }) {
+  const [status, setStatus] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [repo, setRepo] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    getJson('/api/integrations/github/status').then(s => { if (!cancelled) setStatus(s) }).catch(() => { if (!cancelled) setStatus({ configured: false, connected: false }) })
+    return () => { cancelled = true }
+  }, [])
+  if (!status || !status.configured) return null
+  async function connect() {
+    try { const payload = await getJson('/api/integrations/github/auth-url'); if (!payload.configured) return onToast(payload.message); window.location.href = payload.url }
+    catch (error) { onToast(error.message) }
+  }
+  async function disconnect() {
+    setBusy(true)
+    try { await sendJson('/api/integrations/github/disconnect', { method: 'POST' }); onToast('已断开 GitHub 连接'); const s = await getJson('/api/integrations/github/status'); setStatus(s) }
+    catch (error) { onToast(error.message) } finally { setBusy(false) }
+  }
+  async function sync() {
+    if (!repo.trim()) return onToast('请填写仓库（owner/name）')
+    setBusy(true)
+    try {
+      const existing = (status.projects || []).find(item => item.project_id === project.id)
+      const config = existing?.config?.repos?.length ? existing.config : { repos: repo.split(',').map(r => r.trim()).filter(Boolean), logins: { [status.account]: project.owner_id || 1 } }
+      const result = await sendJson(`/api/projects/${project.id}/integrations/github/sync`, { method: 'POST', body: JSON.stringify({ config }) })
+      onToast(`已导入 ${result.created} 条新提交/PR（重复 ${result.skipped} 条）`)
+      await onReload()
+    } catch (error) { onToast(error.message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="panel" style={{ marginBottom: 12 }}>
+      <div className="panel-header">
+        <div><h2>GitHub 接入</h2><p>把真实提交与 PR 自动导入贡献账本（来源标记 GitHub，需组长确认）。</p></div>
+        <span className="eyebrow">{status.connected ? `已连接 ${status.account}` : '未连接'}</span>
+      </div>
+      <div className="modal-actions" style={{ justifyContent: 'flex-start', gap: 8 }}>
+        {!status.connected && <button className="primary-button" disabled={busy} onClick={connect}>连接 GitHub</button>}
+        {status.connected && <>
+          <input value={repo} onChange={e => setRepo(e.target.value)} placeholder="仓库 owner/name，如 ylin314/CollabLedger（多个用英文逗号分隔）" style={{ flex: 1, minWidth: 260 }}/>
+          <button className="primary-button" disabled={busy} onClick={sync}>同步提交/PR</button>
+          <button className="ghost-button" disabled={busy} onClick={disconnect}>断开</button>
+        </>}
+      </div>
+    </div>
+  )
+}
+function ContributionItem({ c, i }) { const icons = { code: ['⌘', 'purple'], document: ['▤', 'blue'], meeting: ['◉', 'amber'], task: ['✓', 'green'], other: ['✦', 'slate'] }; const [icon, tone] = icons[c.kind] || icons.other; return <div className="contribution-item"><div className={`contribution-icon ${tone}`}>{icon}</div><div className="contribution-main"><strong>{c.title || '未命名贡献'}{c.source === 'github' && <span style={{ marginLeft: 6, fontSize: 11, padding: '1px 6px', borderRadius: 999, background: '#e8f0fe', color: '#1a73e8' }}>GitHub</span>}</strong><p>{c.description || '成员提交了一条项目产出记录'}{c.evidence_url && <a href={c.evidence_url} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>查看证据 ↗</a>}</p><span>{c.user_name} · {formatDate(c.created_at)}</span></div><div className="contribution-qty"><strong>{c.quantity || 1}</strong><span>{c.kind === 'code' ? '次' : '项'}</span></div></div> }
 
 function ReportView({ project, report, memberStats, tasks, weekly, risks }) { const rows = report?.members || memberStats.map(m => ({ user_id: m.id, name: m.name, tasks_total: tasks.filter(t => t.assignee_id === m.user_id).length, tasks_completed: m.done, tasks_overdue: tasks.filter(t => t.assignee_id === m.user_id && ['overdue', 'unfinished'].includes(t.status)).length, average_quality: m.quality === '—' ? null : Number(m.quality), actual_hours: tasks.filter(t => t.assignee_id === m.user_id).reduce((a, t) => a + (t.actual_hours || 0), 0) })); const total = report?.overall?.tasks_total ?? tasks.length; const done = report?.overall?.tasks_completed ?? tasks.filter(t => t.status === 'completed').length; async function exportReport() { window.open(`/api/projects/${project.id}/report/export?format=markdown`, '_blank') } return <><PageTitle eyebrow="PROJECT REPORT" title="项目贡献报告" desc="用事实回顾协作过程，为组内互评提供依据。" action={<button className="ghost-button" onClick={exportReport}>⇩ 导出报告</button>}/><div className="report-highlight"><div><span className="eyebrow">PROJECT PULSE</span><h2>小组整体进度</h2><p>截至今天，项目已完成 {done} / {total} 项任务。</p></div><div className="big-progress"><strong>{total ? Math.round(done / total * 100) : 0}%</strong><div><div className="progress-track"><i style={{ width: `${total ? done / total * 100 : 0}%` }}/></div><span>整体完成度</span></div></div></div>
     <div className="stage2-grid">
