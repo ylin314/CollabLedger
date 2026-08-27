@@ -53,7 +53,9 @@ python -m alembic downgrade -1
 | `agent_sessions` | 项目 Agent 会话元数据 |
 | `agent_messages` | Agent 会话消息 |
 | `agent_memory` | 旧版 Agent 兼容记忆表 |
-| `recommendations` | 任务推荐结果快照 |
+| `recommendations` | 任务推荐结果快照、采纳状态与来源 |
+| `recommendation_events` | 推荐生成/采纳/手选事件 |
+| `weekly_reports` | 周报快照持久化（周期、source、LLM 错误、完整 payload） |
 | `audit_logs` | 所有 HTTP 写操作的安全审计事件 |
 
 ## 约束约定

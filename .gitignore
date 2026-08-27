@@ -3,7 +3,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 .uv-cache/
-collab.db
 .env
 frontend/node_modules/
 frontend/dist/
@@ -12,3 +11,16 @@ backups/
 *.partial
 *.restore-partial
 *.pre-restore-*.bak
+
+# 本地数据库与演示数据，不入库
+*.db
+collab.db
+.demo.db
+stage2-demo.db
+
+# GitNexus 本地知识图谱索引
+.gitnexus/
+
+# 浏览器自动化与本地截图产物
+.playwright-mcp/
+stage2-*.png

@@ -186,6 +186,17 @@ class AgentIn(BaseModel):
     session_id: str = Field(default="default", min_length=1, max_length=100)
 
 
+class RecommendBatchIn(BaseModel):
+    limit: int = Field(default=3, ge=1, le=20)
+    include_owner: bool = False
+
+
+class RecommendDecideIn(BaseModel):
+    user_id: int
+    action: Optional[Literal["accept", "manual"]] = None
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
 class WorkLogIn(BaseModel):
     work_date: Optional[date] = None
     hours: float = Field(default=0, ge=0, le=24)

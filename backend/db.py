@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.models import Base
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = r'''
 CREATE TABLE IF NOT EXISTS users (
@@ -155,9 +155,23 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 CREATE TABLE IF NOT EXISTS recommendations (
  id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, task_id INTEGER,
  task_name TEXT, generated_by INTEGER, payload TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+ mode TEXT NOT NULL DEFAULT 'single', status TEXT NOT NULL DEFAULT 'generated', source TEXT NOT NULL DEFAULT 'rule',
+ accepted_user_id INTEGER, accepted_at TEXT, assigned_user_id INTEGER, assigned_at TEXT,
  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
  FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
- FOREIGN KEY(generated_by) REFERENCES users(id) ON DELETE SET NULL
+ FOREIGN KEY(generated_by) REFERENCES users(id) ON DELETE SET NULL,
+ FOREIGN KEY(accepted_user_id) REFERENCES users(id) ON DELETE SET NULL,
+ FOREIGN KEY(assigned_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS recommendation_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, recommendation_id INTEGER NOT NULL, project_id INTEGER NOT NULL,
+ task_id INTEGER, actor_id INTEGER, action TEXT NOT NULL, selected_user_id INTEGER, note TEXT,
+ payload TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+ FOREIGN KEY(recommendation_id) REFERENCES recommendations(id) ON DELETE CASCADE,
+ FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+ FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+ FOREIGN KEY(actor_id) REFERENCES users(id) ON DELETE SET NULL,
+ FOREIGN KEY(selected_user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 CREATE TABLE IF NOT EXISTS audit_logs (
  id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id INTEGER, project_id INTEGER, action TEXT NOT NULL,
@@ -165,6 +179,21 @@ CREATE TABLE IF NOT EXISTS audit_logs (
  request_method TEXT, request_path TEXT, ip_address TEXT, user_agent TEXT, metadata TEXT,
  created_at TEXT NOT NULL, FOREIGN KEY(actor_id) REFERENCES users(id) ON DELETE SET NULL,
  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS weekly_reports (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ project_id INTEGER NOT NULL,
+ period_start TEXT NOT NULL,          -- YYYY-MM-DD(周一)
+ period_end TEXT NOT NULL,            -- YYYY-MM-DD(周日)
+ payload TEXT NOT NULL DEFAULT '{}',  -- 完整周报 JSON
+ source TEXT NOT NULL DEFAULT 'rule', -- llm | rule | mixed
+ llm_error TEXT,                      -- 记录 LLM 失败原因(可空)
+ created_by INTEGER,                  -- 首次触发生成/刷新的用户
+ created_at TEXT NOT NULL,
+ updated_at TEXT,
+ UNIQUE(project_id, period_start, period_end),
+ FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+ FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
 );
 '''
 
@@ -174,7 +203,7 @@ _INSERT_ID_TABLES = {
     "users", "projects", "tasks", "task_logs", "contributions", "auth_sessions",
     "project_invitations", "work_logs", "quality_reviews", "task_checkins", "task_reviews",
     "task_review_history", "agent_memory", "platform_connections", "project_integrations",
-    "external_events", "sync_jobs", "agent_sessions", "agent_messages", "recommendations", "audit_logs",
+    "external_events", "sync_jobs", "agent_sessions", "agent_messages", "recommendations", "recommendation_events", "audit_logs",
 }
 
 
@@ -402,6 +431,15 @@ def initialize(path: str | Path | None = None) -> None:
     _add_columns(conn, "project_invitations", {"max_uses": "INTEGER NOT NULL DEFAULT 1", "used_count": "INTEGER NOT NULL DEFAULT 0", "revoked": "INTEGER NOT NULL DEFAULT 0", "revoked_at": "TEXT", "updated_at": "TEXT", "is_mentor": "INTEGER NOT NULL DEFAULT 0"})
     _add_columns(conn, "contributions", {"evidence_url": "TEXT", "status": "TEXT NOT NULL DEFAULT 'pending'", "source": "TEXT NOT NULL DEFAULT 'manual'", "occurred_at": "TEXT", "updated_at": "TEXT", "created_by": "INTEGER", "confirmed_by": "INTEGER", "confirmed_at": "TEXT", "confirmation_note": "TEXT", "dispute_note": "TEXT", "deleted_at": "TEXT"})
     _add_columns(conn, "agent_memory", {"user_id": "INTEGER"})
+    _add_columns(conn, "recommendations", {
+        "mode": "TEXT NOT NULL DEFAULT 'single'",
+        "status": "TEXT NOT NULL DEFAULT 'generated'",
+        "source": "TEXT NOT NULL DEFAULT 'rule'",
+        "accepted_user_id": "INTEGER",
+        "accepted_at": "TEXT",
+        "assigned_user_id": "INTEGER",
+        "assigned_at": "TEXT",
+    })
     _add_columns(conn, "task_review_history", {"updated_at": "TEXT"})
     if "updated_at" in _columns(conn, "task_review_history"):
         conn.execute("UPDATE task_review_history SET updated_at=COALESCE(updated_at,created_at)")
@@ -437,6 +475,8 @@ def initialize(path: str | Path | None = None) -> None:
         CREATE INDEX IF NOT EXISTS idx_contributions_project ON contributions(project_id,deleted_at,status);
         CREATE INDEX IF NOT EXISTS idx_audit_project_time ON audit_logs(project_id,created_at);
         CREATE INDEX IF NOT EXISTS idx_agent_memory_project ON agent_memory(project_id,session_id,id);
+        CREATE INDEX IF NOT EXISTS idx_recommendations_project ON recommendations(project_id,task_id,created_at);
+        CREATE INDEX IF NOT EXISTS idx_recommendation_events_project ON recommendation_events(project_id,created_at);
     """)
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()

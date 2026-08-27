@@ -88,16 +88,19 @@ uvicorn backend.main:app --reload --port 8000
 
 项目根目录的 `.env` 是 Agent 的唯一配置入口。后端会自动读取它；Docker Compose 也会把同一组变量注入容器。`.env` 已加入 `.gitignore`，不会提交到 Git。
 
-当前 `.env` 使用 OpenAI Chat Completions 兼容协议（不使用 Responses API）：
+当前 `.env` 使用 StepFun 的 OpenAI Chat Completions 兼容协议（不使用 Responses API），模型为 `step-3.7-flash`。完整模板见 `.env.example`：
 
 ```dotenv
-LLM_BASE_URL=https://aigw.saurlax.com/
+LLM_BASE_URL=https://api.stepfun.com/step_plan/v1
 LLM_API_KEY=你的APIKey
-LLM_MODEL=deepseek-v4-flash
+LLM_MODEL=step-3.7-flash
 LLM_CHAT_COMPLETIONS_URL=
+RECOMMEND_SKILL_MODE=llm
+RECOMMEND_USE_LLM_SKILL=true
+RECOMMEND_USE_LLM_REASON=true
 ```
 
-`LLM_CHAT_COMPLETIONS_URL` 留空时自动请求 `${LLM_BASE_URL}/v1/chat/completions`；也可以显式填写完整的 Chat Completions 地址。
+`LLM_CHAT_COMPLETIONS_URL` 留空时自动请求 `${LLM_BASE_URL}/v1/chat/completions`。未配置 Key 时，D1 推荐自动走规则路径，不阻断演示。
 
 ## 前端开发与生产预览
 
@@ -120,7 +123,7 @@ npm run dev
 - `/api/projects/{id}/recommendations`：基于技能、质量、效率和负载的任务推荐
 - `/api/projects/{id}/report`、`/api/projects/{id}/agent`：贡献报告与轻量协作 Agent
 
-前端在后端 API 不可用时会自动切换到内置演示数据，便于直接体验界面；恢复 API 后，创建任务、任务生命周期、贡献记录和推荐会写入 SQLite。
+当前前端不再使用内置演示数据伪装成功；API 失败会直接提示错误。任务、贡献、推荐、负载、风险和周报均写入 SQLite。
 
 首次使用时，如果数据库中没有项目，打开系统会直接显示“创建你的第一个项目”页面。填写项目名称、类型、周期和组长信息后，系统会先创建用户，再创建真实项目，之后所有任务和 Agent 对话都会使用该项目，不再使用演示项目。
 
@@ -136,56 +139,86 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 ### Agent 四层结构
 
 - `tool`：读取项目任务、成员负载、风险、报告，并调用规则推荐器。
-- `memory`：按项目和会话保存 Agent 对话记忆，使用当前配置的 SQLite 或 PostgreSQL 数据库持久化。
-- `plan`：先根据问题规划需要读取的工具，再执行工具，避免模型凭空猜测。
-- `llm`：调用 OpenAI Chat Completions 兼容协议 `POST /v1/chat/completions`，不是 Responses API。
+- `memory`：按项目和会话保存 Agent 对话记忆，使用当前配置的 SQLite 或 PostgreSQL 数据库持久化；长对话自动压缩为 `role=summary` 摘要，摘要失败不丢消息。
+- `plan`：先根据问题规划需要读取的工具，再执行工具；LLM 可在白名单内继续追加工具调用（ReAct 简化版多步循环），每步结果结构化注入。
+- `llm`：调用 OpenAI Chat Completions 兼容协议 `POST /v1/chat/completions`，不是 Responses API；结构化决策返回 JSON，失败自动重试并回退规则。
 
 可通过 `GET /api/agent/config` 查看脱敏后的 URL、模型和配置状态；完整 API Key 永远不会由接口返回。
 
-## 阶段一功能（已补全）
+## 当前阶段与角色 TODO
 
-当前版本已经补齐路线图阶段一的真实协作闭环：
+更新时间：2026-08-26。分支约定：`main` 只合可运行代码；rxc 当前开发分支为 `dev_D`。角色对应：A=ly，B=dkd，C=czc，D=rxc。任务编号（A1/B1/C1/D1）保持不变。
 
-- 注册、登录、退出登录与 Bearer 会话
-- 项目数据按登录用户隔离
-- 项目角色：组长、成员、只读成员
-- 项目创建、编辑、删除与多项目切换
-- 成员直接添加、邀请 Token/邀请码、接受邀请、修改角色、移除成员
-- 任务创建、负责人分配、状态流转和操作日志
-- 成员主动工作日志：开始工作、结束工作、日期、投入小时、工作说明
-- 任务完成后的 0–5 分质量评价与质量汇总
-- SQLite 向前兼容迁移、Docker 部署和自动化测试
+| 阶段 | 目标 | 状态 | 说明 |
+| --- | --- | --- | --- |
+| 阶段一 基础功能 P0 | 注册登录、项目、邀请、任务、打卡、评价、看板 | 已完成 | ly/dkd/czc 已形成真实协作闭环 |
+| 阶段二 AI 功能 P1 | 推荐、负载、匹配度、风险、周报、Agent 对话 | rxc 推进中 | D1 已加深：语义匹配、四维拆开、排除原因、采纳留痕、批量建议；D3 已深化：LLM 逐成员摘要与整体洞察、历史周报落库与回看、refresh 覆盖、失败规则回退；D4 已深化：Agent 多步推理循环、六个只读工具、来源引用与工具轨迹、会话摘要压缩；D2 已深化：加权负载、风险严重度排序与 LLM 风险总结 |
+| 阶段三 贡献系统 P1 | 手动贡献 + 外部平台接入 | 部分完成 | 手动贡献/确认/争议已有；GitHub 等接入未做 |
+| 阶段四 长期协作 P2 | 历史项目、画像、跨项目授权 | 未开始 | 归档接口有雏形，画像页不要用假数据 |
 
-认证接口：
+### 角色 TODO
 
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/auth/logout`
-- `GET /api/auth/me`
-- `POST /api/auth/accept-invitation`
+**ly（A）后端底座 / 账号权限 / 数据库 / 部署**
 
-阶段一协作接口：
+- [x] A1-A6：拆分 routers/services、注册登录、权限、SQLAlchemy/Alembic、Docker、审计与限流
+- [ ] 与 rxc 对齐生产 `.env`（CORS、Secure Cookie、LLM）后再做正式部署验证
 
-- `POST/GET/PATCH/DELETE /api/projects/{id}/members...`
-- `POST/GET /api/projects/{id}/invitations`
-- `POST/GET/DELETE /api/projects/{id}/work-logs...`
-- `POST/GET /api/projects/{id}/quality-reviews`
-- `GET /api/projects/{id}/quality-summary`
+**dkd（B）核心业务后端**
 
-测试命令：
+- [x] B1-B5：项目、邀请、任务、打卡、质量评价
+- [x] B6：手动贡献账本（确认/争议）
+- [ ] B7：历史项目查询页面对齐；归档只读体验需 czc 配合
+
+**czc（C）前端产品 / 交互**
+
+- [x] 登录注册、项目空间、看板、打卡、评价、贡献、Agent 对话
+- [ ] C1：拆分 `frontend/src/main.jsx`，引入 Router / Query / TypeScript
+- [ ] C9：继续把报告页做成独立页面，去掉剩余装饰按钮
+- [ ] C10：不要提前做阶段四假画像
+
+**rxc（D）AI / 数据分析 / 平台接入 / 质量（本轮）**
+
+- [x] D1 加深：技能 40% / 质量 30% / 效率 20% / 负载 10%；仅 member 默认候选；超负载排除；无样本中性分 0.5；规则 + LLM 语义匹配/理由润色；四维证据；批量建议；采纳/手选留痕
+- [x] D1 本轮：技能族匹配（后端/前端/文档等同义词，不再只靠字面子串）、候选人对比解释、推荐历史中文状态、可重复演示种子 `scripts/seed_stage2_demo.py`
+- [x] D1 已接入真实 LLM：StepFun `step-3.7-flash`，语义匹配与理由润色已验证；无 `.env` 时仍自动回退规则路径
+- [x] D1 深化二轮：LLM 理由注入任务描述+四维事实（数值化理由、低匹配候选指明方向）；前端 AI 降级提示（degrade-note）；推荐卡片结构化证据标签（技能族/样本数/负载/来源）；推荐历史页展示批量/单任务、来源、采纳人、改派对象
+- [x] D2 深化：加权负载（`weighted_load` / `weighted_level` / `weighted_overdue_tasks`，权重可用环境变量覆盖）＋风险按 `severity` 降序（`critical_unassigned` 关键任务无人承接）＋LLM 风险总结（`summary`/`summary_source`，失败规则回退，`summarize=0` 可跳过）
+- [x] D3 深化：`/weekly-report` LLM 增强 + 历史留痕（`weekly-reports` 表、`week_start`/`refresh`、`/weekly-report/history`）
+- [x] D4 深化：Agent 多步推理循环（ReAct 简化版）＋六个只读工具＋`tool_trace`/`citations` 来源引用＋会话摘要压缩（失败自动规则兜底）
+- [ ] D5：GitHub / 飞书 / 腾讯文档接入（等 dkd 的 B6 稳定后做，不阻塞阶段二演示）
+- [ ] D6：长期画像（阶段四）
+- [ ] D7：完整联调与演示手册；当前仅保留少量核心测试
+
+阶段二接口：
+
+- `GET /api/projects/{id}/recommendations`
+- `POST /api/projects/{id}/recommendations/batch`
+- `GET /api/projects/{id}/recommendations/history`
+- `POST /api/projects/{id}/recommendations/{rec_id}/decide`
+- `GET /api/projects/{id}/members/load`
+- `GET /api/projects/{id}/risks`
+- `GET /api/projects/{id}/weekly-report`
+- `GET /api/projects/{id}/weekly-report/history`
+- `POST /api/projects/{id}/agent/chat`
+
+本地验证：
 
 ```powershell
-python -m pytest -q backend
-cd frontend
-npm run build
+python -m pytest -q backend/test_stage2.py
+python scripts/seed_stage2_demo.py  # 重置阶段二演示数据
+$env:COLLAB_DB="$PWD\stage2-demo.db"
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
+
 ## 前端路由
+
 
 前端使用 Hash 路由，兼容 Vite 开发服务器和 Docker 中 FastAPI 的静态托管。工作区页面地址示例：
 
 ```text
 #/projects/{project_id}/overview
 #/projects/{project_id}/tasks
+#/projects/{project_id}/recommendations
 #/projects/{project_id}/contributions
 #/projects/{project_id}/report
 #/projects/{project_id}/agent

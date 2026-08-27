@@ -1240,40 +1240,52 @@ Query 参数：
 | `task_type` | string | 否 | 任务类型 |
 | `estimated_hours` | number | 否 | 预计工时，默认 1 |
 | `limit` | integer | 否 | 候选人数，默认 3 |
+| `include_owner` | boolean | 否 | 默认 false，组长不进入候选 |
 
-成功响应：`200 OK`
+成功响应重点字段：
 
-```json
-{
-  "task": {
-    "task_id": 10,
-    "task_name": "完成项目 PPT",
-    "task_type": "汇报",
-    "estimated_hours": 4
-  },
-  "recommendations": [
-    {
-      "user_id": 4,
-      "name": "赵六",
-      "score": 88.5,
-      "reasons": {
-        "skill_match": 0.9,
-        "average_quality": 4.5,
-        "efficiency": 1.1,
-        "current_load": "1/2",
-        "summary": "赵六擅长文档和汇报，历史质量较高，当前负载较低。"
-      }
-    }
-  ],
-  "generated_at": "2026-08-25T10:00:00Z"
-}
-```
+- `recommendation_id`：本次生成记录 ID，采纳时使用
+- `comparison`：第一候选与第二候选的分差和关键维度对比，便于组长理解“为什么是他”
+- `recommendations[].dimensions`：技能/质量/效率/负载四维分数、证据、是否样本不足
+- `recommendations[].dimensions.skill.skill_families`：命中的技能族，如后端开发、前端开发、文档与答辩
+- `recommendations[].reasons.contrast`：第一候选的对比解释
+- `excluded`：未进入候选的成员及原因（`overloaded` / `owner_excluded` / `viewer`）
+- `excluded_overloaded`：兼容旧前端的超负载列表
+- `disclaimer`：固定为“推荐仅供参考，最终由组长决定。”
+- `source`：`rule` 或 `hybrid`；无 LLM Key 时走规则路径
 
 规则：
 
-- 推荐只基于项目内事实数据
-- 达到最大并发任务数的成员不进入候选列表
-- 前端必须展示“推荐仅供参考”
+- 默认只推荐 `member`；`viewer` 永不推荐；组长默认排除
+- 技能匹配使用同义词技能族 + 字面技能 + 历史任务类型；未配置 LLM Key 时仍可给出可解释匹配
+- 达到最大并发任务数的成员进入 `excluded`，不进候选
+- 高负载但未超上限仍可推荐，负载分降低并写明“负载偏高”
+- 无评价/无工时按中性分 0.5，理由写“按中性分”
+- 推荐只基于项目内事实，不公开排名，不自动指派
+
+### 9.1.1 批量生成未分配任务建议
+
+```http
+POST /api/projects/{project_id}/recommendations/batch
+```
+
+权限：`owner` 或 `member`。请求 `{"limit":3,"include_owner":false}`。成功返回每个未分配任务的 9.1 结果，不自动指派。
+
+### 9.1.2 推荐历史
+
+```http
+GET /api/projects/{project_id}/recommendations/history
+```
+
+权限：项目成员。可带 `task_id`。返回生成记录、状态、是否采纳、采纳了谁；`status_label` 提供中文状态展示文案。
+
+### 9.1.3 采纳或手选负责人
+
+```http
+POST /api/projects/{project_id}/recommendations/{rec_id}/decide
+```
+
+权限：`owner` 或 `member`。请求 `{"user_id":2,"note":"采纳推荐"}`。成功后调用现有任务指派，并写入 `recommendation_events`。若人选不在推荐列表中，`action` 为 `manual`。
 
 ### 9.2 获取成员负载分析
 
@@ -1299,17 +1311,22 @@ GET /api/projects/{project_id}/members/load
       "load_ratio": 1.0,
       "load_level": "high",
       "estimated_hours": 18,
-      "active_task_ids": [1, 2, 3]
+      "active_task_ids": [1, 2, 3],
+      "weighted_load": 1.3,
+      "weighted_level": "high",
+      "weighted_label": "高负载",
+      "weighted_overdue_tasks": 1
     }
   ]
 }
 ```
 
-`load_level`：
+字段说明（D2 深化，向后兼容）：
 
-- `low`：`load_ratio < 0.5`
-- `normal`：`0.5 <= load_ratio <= 0.8`
-- `high`：`load_ratio > 0.8`
+- `load_ratio` / `load_level`：按任务数计数（保留原语义，前端不受影响）。
+- `weighted_load`：加权负载 = Σ状态权重 ÷ 最大并发任务数；状态权重默认进行中 1.0、已分配 0.6、暂停 0.5、延期 1.3，可用 `LOAD_WEIGHT_IN_PROGRESS` / `LOAD_WEIGHT_ASSIGNED` / `LOAD_WEIGHT_PAUSED` / `LOAD_WEIGHT_OVERDUE` 环境变量覆盖。
+- `weighted_level` / `weighted_label`：按加权比计算，`<0.5` 低负载、`0.5-0.8` 正常、`>0.8` 高负载。
+- `weighted_overdue_tasks`：该成员当前延期任务数。
 
 ### 9.3 获取项目风险
 
@@ -1326,10 +1343,13 @@ GET /api/projects/{project_id}/risks
   "project_id": 1,
   "generated_at": "2026-08-25T10:00:00Z",
   "count": 2,
+  "summary": "当前最需要关注：任务「完成后端鉴权模块」已延期。建议优先处理延期调度与指派。",
+  "summary_source": "llm",
   "risks": [
     {
       "type": "overdue_task",
       "level": "high",
+      "severity": 90,
       "message": "任务「完成后端鉴权模块」已延期",
       "task_id": 1,
       "due_date": "2026-09-10"
@@ -1337,6 +1357,7 @@ GET /api/projects/{project_id}/risks
     {
       "type": "high_member_load",
       "level": "medium",
+      "severity": 65,
       "message": "张三当前负载为 3/3",
       "user_id": 2,
       "current_task_count": 3,
@@ -1346,8 +1367,21 @@ GET /api/projects/{project_id}/risks
 }
 ```
 
-`type` 可选值：`overdue_task`、`upcoming_deadline`、`unassigned_task`、`high_member_load`、`no_recent_activity`。  
+Query 参数：
+
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `summarize` | bool | 否 | `true` | 是否生成 LLM 风险总结；传 `0`/`false` 跳过（批量/性能场景） |
+
+`type` 可选值：`overdue_task`、`upcoming_deadline`、`unassigned_task`、`high_member_load`、`no_recent_activity`、`critical_unassigned`。  
 `level` 可选值：`low`、`medium`、`high`。
+
+`severity`（0-100，输出按降序排列）：`critical_unassigned=95`、`overdue_task=90`、`upcoming_deadline=70`、`high_member_load=65`、`unassigned_task=60`、`no_recent_activity=30`。
+
+`summary` / `summary_source`（D2 深化）：
+
+- 默认 `summarize=true` 且存在风险时才生成 `summary`；LLM 未配置或任一段失败时 `summary_source="rule"` 回退规则拼接，接口不报错。
+- `critical_unassigned`：高优先级（`priority='high'`）且未分配的任务，代表“关键任务无人承接”。
 
 ### 9.4 生成项目周报
 
@@ -1361,9 +1395,18 @@ Query 参数：
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `start_date` | date | 否 | 默认本周一 |
-| `end_date` | date | 否 | 默认本周日 |
+| `week_start` | date | 否 | 默认本周周一；格式非法返回 422；传入后按周一归一化 |
+| `start_date` | date | 否 | 兼容旧参数；与 `end_date` 同传时按周一归一化后视作 `week_start` |
+| `end_date` | date | 否 | 兼容旧参数 |
+| `refresh` | bool | 否 | `true` 时强制重新生成并覆盖该周期（不产生重复行） |
 | `format` | string | 否 | `json` 或 `markdown`，默认 `json` |
+
+行为：
+
+- 首次访问某周：基于真实数据实时生成（LLM 逐成员摘要 + 整体洞察）并落库 `weekly_reports`，返回 `stored=true`。
+- 再次访问同周：直接读库返回（除非 `refresh=true`）。
+- LLM 任一段失败或未配置：该段回退规则文本，整体 `source` 取 `llm | mixed | rule`，`llm_error` 记录失败原因但不阻塞接口。
+- 回看上周：传 `week_start=<上周周一>` 即可，未生成过则实时生成并落库。
 
 成功响应：`200 OK`
 
@@ -1373,7 +1416,8 @@ Query 参数：
   "project_name": "软件工程课程大作业",
   "period": {
     "start_date": "2026-08-24",
-    "end_date": "2026-08-30"
+    "end_date": "2026-08-30",
+    "week_start": "2026-08-24"
   },
   "summary": {
     "tasks_total": 18,
@@ -1394,9 +1438,16 @@ Query 参数：
       "completed_tasks": 2,
       "active_tasks": 2,
       "checkin_count": 4,
-      "actual_hours": 12.5
+      "actual_hours": 12.5,
+      "summary": "本周完成 2 项任务，累计工时 12.5 小时",
+      "summary_source": "llm"
     }
   ],
+  "insight": "本周整体进度正常，主要风险为……建议……",
+  "insight_source": "llm",
+  "source": "llm",
+  "llm_error": null,
+  "stored": true,
   "generated_at": "2026-08-25T10:00:00Z"
 }
 ```
@@ -1406,6 +1457,24 @@ Query 参数：
 - 周报只能基于真实项目数据生成
 - 不做成员排名
 - 不输出人格评价或“摸鱼”判断
+
+### 9.4.1 周报历史
+
+```http
+GET /api/projects/{project_id}/weekly-report/history
+```
+
+权限：项目成员。
+
+Query 参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `limit` | int | 否 | 默认 20，最大 100 |
+| `before` | date | 否 | 只返回周期开始早于该日期的记录 |
+
+成功响应：`200 OK`，`items` 按 `period_start` 倒序，每项含 `id / period_start / period_end / source / llm_error / created_by / created_at / updated_at / tasks_completed / checkin_count / risks_count`（不含大 payload）。
+
 
 ### 9.5 获取项目报告
 
@@ -1496,8 +1565,20 @@ POST /api/projects/{project_id}/agent/chat
 {
   "answer": "当前项目最大的风险是任务「完成后端鉴权模块」已经延期，建议优先处理。",
   "source": "llm",
+  "llm_error": null,
   "plan": [
     { "tool": "snapshot", "purpose": "读取任务、成员、风险和贡献事实" }
+  ],
+  "tool_trace": [
+    { "tool": "risk_detail", "args": {}, "ok": true, "error": null }
+  ],
+  "citations": [
+    {
+      "type": "task",
+      "task_id": 3,
+      "title": "完成后端鉴权模块",
+      "status": "in_progress"
+    }
   ],
   "facts": {
     "project_id": 1,
@@ -1510,19 +1591,26 @@ POST /api/projects/{project_id}/agent/chat
       "created_at": "2026-08-25T10:00:00Z"
     }
   ],
-  "llm_error": null,
   "generated_at": "2026-08-25T10:00:00Z"
 }
 ```
 
-`source` 可选值：`llm`、`fallback`。
+`source` 可选值：`llm`、`fallback`（LLM 任一环节失败时回退规则回答，`llm_error` 记录原因，不阻塞接口）。
 
-规则：
+响应字段说明：
 
-- Agent 只能读取当前用户有权访问的项目
-- 回答必须基于项目事实
-- 不输出成员排名、人格评价或负面标签
-- LLM 失败时使用规则兜底
+- `plan`：本次问题触发的初始工具规划（规则分支，不依赖 LLM）。
+- `tool_trace`：实际执行过的工具轨迹，含工具名、参数与成功/失败状态，供前端展示推理过程。
+- `citations`：从工具结果中提取的来源引用（任务 / 风险 / 成员 / 周报），可追溯到具体事实。
+- `facts`：本轮收集到的项目事实快照（脱敏，不含 API Key）。
+- `memory`：当前会话记忆（超过阈值后自动压缩为 `role=summary` 摘要，前插返回）。
+
+Agent 行为规则：
+
+- Agent 只能读取当前用户有权访问的项目，且只能调用白名单只读工具（`snapshot` / `recommend` / `task_detail` / `risk_detail` / `weekly_report` / `member_load`），不会出现未知工具调用。
+- 回答必须基于项目事实（LLM 只能依据注入的 `facts` / `tool_trace`），不输出成员排名、人格评价或负面标签。
+- LLM 采用多步推理循环（ReAct 简化版），`AGENT_MAX_STEPS`（默认 4）控制最大轮数，超限或失败时自动规则兜底。
+- 长对话自动摘要压缩：`AGENT_SUMMARY_THRESHOLD`（默认 8）与 `AGENT_SUMMARY_LIMIT`（默认 8）控制，摘要失败时保留原消息不丢上下文。
 
 ### 9.8 获取 Agent 会话列表
 
