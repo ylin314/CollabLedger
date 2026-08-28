@@ -12,8 +12,10 @@ function ClassroomsView({ currentUser, onToast, onBack }) {
   async function load() {
     const data = await getJson("/api/classrooms");
     setClassrooms(data.items || []);
-    const next = selected || data.items?.[0];
-    if (next) setSelected(next);
+    setSelected((current) => {
+      const next = data.items?.find((item) => item.id === current?.id);
+      return next || data.items?.[0] || null;
+    });
   }
   useEffect(() => { load().catch((e) => onToast?.(formatApiError(e))); }, []);
   useEffect(() => { if (selected) getJson(`/api/classrooms/${selected.id}/members`).then((d) => setMembers(d.items || [])).catch((e) => onToast?.(formatApiError(e))); }, [selected]);

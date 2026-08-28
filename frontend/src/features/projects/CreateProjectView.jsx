@@ -49,7 +49,7 @@ function CreateProjectView({ currentUser, onCreated, onCancel }) {
       });
       await onCreated(project);
     } catch (err) {
-      setError("创建失败，请确认后端已启动，并检查项目名称和负责人信息。");
+      setError("创建失败，请检查项目名称、班级和成员选择后重试。");
     } finally {
       setBusy(false);
     }

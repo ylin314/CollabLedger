@@ -183,11 +183,11 @@ def update_member_role(project_id: int, user_id: int, payload: RoleUpdate, reque
     if current["role"] == "owner" and payload.role != "owner":
         if user is not None and project["owner_id"] != user["id"] and user_id != user["id"]:
             conn.close(); fail(403, "FORBIDDEN", "只有主 owner 可以调整其他 owner 的角色")
-        owner_count = conn.execute("SELECT COUNT(*) n FROM memberships WHERE project_id=? AND role='owner'", (project_id,)).fetchone()["n"]
+        owner_count = conn.execute("SELECT COUNT(*) n FROM memberships WHERE project_id=? AND role='owner' AND status='active'", (project_id,)).fetchone()["n"]
         if owner_count <= 1: conn.close(); fail(409, "CONFLICT", "项目必须至少保留一个 owner")
     stamp = now_iso(); conn.execute("UPDATE memberships SET role=?,updated_at=? WHERE project_id=? AND user_id=?", (payload.role, stamp, project_id, user_id))
     if project["owner_id"] == user_id and payload.role != "owner":
-        replacement = conn.execute("SELECT user_id FROM memberships WHERE project_id=? AND role='owner' ORDER BY joined_at LIMIT 1", (project_id,)).fetchone()
+        replacement = conn.execute("SELECT user_id FROM memberships WHERE project_id=? AND role='owner' AND status='active' ORDER BY joined_at LIMIT 1", (project_id,)).fetchone()
         conn.execute("UPDATE projects SET owner_id=?,updated_at=? WHERE id=?", (replacement["user_id"], stamp, project_id))
     conn.commit(); conn.close(); return {"user_id": user_id, "role": payload.role, "updated_at": stamp}
 
@@ -200,12 +200,13 @@ def remove_member(project_id: int, user_id: int, request: Request) -> Response:
     if row["role"] == "owner":
         if user is not None and project["owner_id"] != user["id"] and user_id != user["id"]:
             conn.close(); fail(403, "FORBIDDEN", "只有主 owner 可以移除其他 owner")
-        count = conn.execute("SELECT COUNT(*) n FROM memberships WHERE project_id=? AND role='owner'", (project_id,)).fetchone()["n"]
+        count = conn.execute("SELECT COUNT(*) n FROM memberships WHERE project_id=? AND role='owner' AND status='active'", (project_id,)).fetchone()["n"]
         if count <= 1: conn.close(); fail(409, "CONFLICT", "项目必须至少保留一个 owner")
-    conn.execute("UPDATE memberships SET status='left',left_at=?,updated_at=? WHERE project_id=? AND user_id=?", (now_iso(), now_iso(), project_id, user_id))
+    stamp = now_iso(); conn.execute("UPDATE memberships SET status='left',left_at=?,updated_at=? WHERE project_id=? AND user_id=? AND status='active'", (stamp, stamp, project_id, user_id))
     if project["owner_id"] == user_id:
-        replacement = conn.execute("SELECT user_id FROM memberships WHERE project_id=? AND role='owner' ORDER BY joined_at LIMIT 1", (project_id,)).fetchone()
-        conn.execute("UPDATE projects SET owner_id=?,updated_at=? WHERE id=?", (replacement["user_id"], now_iso(), project_id))
+        replacement = conn.execute("SELECT user_id FROM memberships WHERE project_id=? AND role='owner' AND status='active' ORDER BY joined_at LIMIT 1", (project_id,)).fetchone()
+        if replacement:
+            conn.execute("UPDATE projects SET owner_id=?,updated_at=? WHERE id=?", (replacement["user_id"], stamp, project_id))
     conn.commit(); conn.close(); return Response(status_code=204)
 
 
