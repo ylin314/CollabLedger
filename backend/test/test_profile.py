@@ -194,3 +194,46 @@ def test_recommendation_current_no_fallback(tmp_path, monkeypatch):
     assert node.get("profile_source") != "historical"
     assert node["dimensions"]["quality"]["samples"] == 2
     assert node["dimensions"]["efficiency"]["samples"] == 2
+
+def test_profile_404_and_401(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    anon = _client()
+    assert anon.get("/api/users/1/profile").status_code == 401
+    owner = _client(); _account(owner, "组长", "own-404@example.com")
+    assert owner.get("/api/users/999999/profile").status_code == 404
+
+
+def test_profile_efficiency_none_without_completed_tasks(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    owner = _client(); backend = _client()
+    _account(owner, "组长", "own-eff@example.com")
+    backend_user = _account(backend, "新后端", "be-eff@example.com")
+    pid = owner.post("/api/projects", json={"name": "效率项目"}).json()["id"]
+    code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
+    assert backend.post(f"/api/invitations/{code}/accept").status_code == 200
+    task = owner.post(f"/api/projects/{pid}/tasks", json={"title": "只开始不完成", "assignee_id": backend_user["id"], "estimated_hours": 4}).json()
+    backend.post(f"/api/tasks/{task['id']}/start", json={})
+
+    body = owner.get(f"/api/users/{backend_user['id']}/profile").json()
+    assert body["efficiency_samples"] == 0
+    assert body["average_efficiency"] is None
+    assert body["quality_samples"] == 0
+    assert body["average_quality"] is None
+    assert body["projects_count"] == 1
+    assert body["active_months"] >= 1
+
+
+def test_recommendation_requires_exactly_one_task_identifier(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    owner = _client(); _account(owner, "组长", "own-recid@example.com")
+    pid = owner.post("/api/projects", json={"name": "推荐参数项目"}).json()["id"]
+    task = owner.post(f"/api/projects/{pid}/tasks", json={"title": "参数校验任务"}).json()
+
+    both = owner.get(f"/api/projects/{pid}/recommendations", params={"task_id": task["id"], "task_name": "同时给两个"})
+    assert both.status_code == 422
+    neither = owner.get(f"/api/projects/{pid}/recommendations")
+    assert neither.status_code == 422
+    missing = owner.get(f"/api/projects/{pid}/recommendations", params={"task_id": 999999})
+    assert missing.status_code == 404
+    by_name = owner.get(f"/api/projects/{pid}/recommendations", params={"task_name": "参数校验任务"})
+    assert by_name.status_code == 200

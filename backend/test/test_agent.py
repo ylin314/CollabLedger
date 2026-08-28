@@ -141,3 +141,32 @@ def test_agent_memory_summary_failure_keeps_messages(tmp_path, monkeypatch):
     assert not any(item["role"] == "summary" for item in recent)
     assert len(recent) == 14  # 原消息全部保留，未丢信息
 
+def test_agent_llm_exception_falls_back_to_rules(tmp_path, monkeypatch):
+    runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="deepseek-v4-flash"))
+    def boom(messages, timeout=None, max_tokens=None):
+        raise RuntimeError("LLM 超时")
+    runtime.llm.complete = boom
+
+    def fake_run(project_id, name, arguments=None):
+        if name == "risk_detail":
+            return {"project_id": project_id, "generated_at": "2026-08-28T00:00:00Z", "count": 1,
+                    "risks": [{"message": "任务「测试任务」已延期", "level": "high", "rule": "状态为延期/未完成"}],
+                    "rule": "覆盖延期、临近截止、无负责人和高负载四类风险；按严重度降序排列"}
+        return {"project": {"name": "测试"}, "tasks": [], "members": [],
+                "report": {"overall": {"tasks": 0, "completed": 0}},
+                "risks": {"risks": []}, "load": {"members": []}}
+
+    runtime.tools.run = fake_run
+    result = runtime.run(1, "项目风险如何？")
+    assert result["source"] == "fallback"
+    assert "LLM 超时" in (result["llm_error"] or "")
+    assert result["answer"]
+    assert "已延期" in result["answer"]  # 回落到风险分支并引用最严重风险
+
+def test_agent_llm_invalid_json_falls_back(tmp_path, monkeypatch):
+    runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="deepseek-v4-flash"))
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: "这不是 JSON"
+    runtime.tools.run = lambda project_id, name, arguments=None: {"project": {"name": "测试"}, "tasks": [], "members": [], "report": {"overall": {"tasks": 0, "completed": 0}}, "risks": {"risks": []}}
+    result = runtime.run(1, "帮我看看")
+    assert result["source"] == "fallback"
+    assert result["answer"]
