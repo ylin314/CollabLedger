@@ -153,7 +153,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 | --- | --- | --- | --- |
 | 阶段一 基础功能 P0 | 注册登录、项目、邀请、任务、打卡、评价、看板 | 已完成 | ly/dkd/czc 已形成真实协作闭环 |
 | 阶段二 AI 功能 P1 | 推荐、负载、匹配度、风险、周报、Agent 对话 | rxc 推进中 | D1 已加深：语义匹配、四维拆开、排除原因、采纳留痕、批量建议；D3 已深化：LLM 逐成员摘要与整体洞察、历史周报落库与回看、refresh 覆盖、失败规则回退；D4 已深化：Agent 多步推理循环、六个只读工具、来源引用与工具轨迹、会话摘要压缩；D2 已深化：加权负载、风险严重度排序与 LLM 风险总结 |
-| 阶段三 贡献系统 P1 | 手动贡献 + 外部平台接入 | 部分完成 | 手动贡献/确认/争议已有；GitHub 等接入未做 |
+| 阶段三 贡献系统 P1 | 手动贡献 + 外部平台接入 | 部分完成 | 手动贡献/确认/争议已有；GitHub 已接入（D5）；飞书/腾讯文档等仍为 TODO |
 | 阶段四 长期协作 P2 | 历史项目、画像、跨项目授权 | 未开始 | 归档接口有雏形，画像页不要用假数据 |
 
 ### 角色 TODO
@@ -185,7 +185,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 - [x] D2 深化：加权负载（`weighted_load` / `weighted_level` / `weighted_overdue_tasks`，权重可用环境变量覆盖）＋风险按 `severity` 降序（`critical_unassigned` 关键任务无人承接）＋LLM 风险总结（`summary`/`summary_source`，失败规则回退，`summarize=0` 可跳过）
 - [x] D3 深化：`/weekly-report` LLM 增强 + 历史留痕（`weekly-reports` 表、`week_start`/`refresh`、`/weekly-report/history`）
 - [x] D4 深化：Agent 多步推理循环（ReAct 简化版）＋六个只读工具＋`tool_trace`/`citations` 来源引用＋会话摘要压缩（失败自动规则兜底）
-- [ ] D5：GitHub / 飞书 / 腾讯文档接入（等 dkd 的 B6 稳定后做，不阻塞阶段二演示）
+- [x] D5：GitHub 接入（OAuth App 授权、连接/断开、手动同步提交与 PR、去重、导入 source=github 的 pending 贡献、token 后端加密存储；飞书/腾讯文档仍为 TODO）
 - [ ] D6：长期画像（阶段四）
 - [ ] D7：完整联调与演示手册；当前仅保留少量核心测试
 

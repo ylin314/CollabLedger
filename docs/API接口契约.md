@@ -1640,6 +1640,8 @@ DELETE /api/projects/{project_id}/agent/sessions/{session_id}
 
 平台接入采用统一适配层。GitHub、飞书、腾讯文档、会议系统等具体平台都通过相同的连接、授权、项目绑定、同步和事件模型接入。
 
+> 实现状态（2026-08-28）：GitHub 已实现（OAuth 授权/回调/断开、项目同步/去重、token 后端混淆存储），对应 `backend/routers/integrations.py` 与前端接入组件；飞书 / 腾讯文档 / 会议系统等其余平台仍为 TODO，前端仅预留平台列表。
+
 支持的 `platform` 值：
 
 - `github`
@@ -2279,7 +2281,7 @@ PATCH /api/users/me/authorizations
 
 ### P2：第三阶段以后实现
 
-1. GitHub 接入接口
+1. ~~GitHub 接入接口~~（D5 已实现，见第 10 章）
 2. 长期协作接口
 3. 个人画像接口
 4. 跨项目合作关系接口
