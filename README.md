@@ -154,7 +154,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 | 阶段一 基础功能 P0 | 注册登录、项目、邀请、任务、打卡、评价、看板 | 已完成 | ly/dkd/czc 已形成真实协作闭环 |
 | 阶段二 AI 功能 P1 | 推荐、负载、匹配度、风险、周报、Agent 对话 | rxc 推进中 | D1 已加深：语义匹配、四维拆开、排除原因、采纳留痕、批量建议；D3 已深化：LLM 逐成员摘要与整体洞察、历史周报落库与回看、refresh 覆盖、失败规则回退；D4 已深化：Agent 多步推理循环、六个只读工具、来源引用与工具轨迹、会话摘要压缩；D2 已深化：加权负载、风险严重度排序与 LLM 风险总结 |
 | 阶段三 贡献系统 P1 | 手动贡献 + 外部平台接入 | 部分完成 | 手动贡献/确认/争议已有；GitHub 已接入（D5）；飞书/腾讯文档等仍为 TODO |
-| 阶段四 长期协作 P2 | 历史项目、画像、跨项目授权 | 未开始 | 归档接口有雏形，画像页不要用假数据 |
+| 阶段四 长期协作 P2 | 历史项目、画像、跨项目授权 | 进行中 | D6 成员长期画像已交付：跨项目聚合技能/质量/效率/贡献画像接口 + 推荐器样本不足时历史兜底 + 前端画像面板；跨项目授权仍为 TODO |
 
 ### 角色 TODO
 
@@ -186,7 +186,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 - [x] D3 深化：`/weekly-report` LLM 增强 + 历史留痕（`weekly-reports` 表、`week_start`/`refresh`、`/weekly-report/history`）
 - [x] D4 深化：Agent 多步推理循环（ReAct 简化版）＋六个只读工具＋`tool_trace`/`citations` 来源引用＋会话摘要压缩（失败自动规则兜底）
 - [x] D5：GitHub 接入（OAuth App 授权、连接/断开、手动同步提交与 PR、去重、导入 source=github 的 pending 贡献、token 后端加密存储；飞书/腾讯文档仍为 TODO）
-- [ ] D6：长期画像（阶段四）
+- [x] D6：成员长期画像（跨项目聚合技能/质量/效率/贡献、时间衰减、`GET /api/users/{id}/profile` 接口、本人/同项目成员可看、外人 403；推荐器当前项目样本不足时参考历史画像兜底并标记 `profile_source=historical`；前端画像面板与推荐来源标记）
+- [ ] D6 余项：跨项目授权延伸为可配置；归档仅只读体验与 A 对齐
 - [ ] D7：完整联调与演示手册；当前仅保留少量核心测试
 
 阶段二接口：
