@@ -32,7 +32,7 @@ def list_projects(
     page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
     conn = db(); user = require_user(conn, request)
-    where = ["m.user_id=?", "p.deleted_at IS NULL", "p.status=?"]
+    where = ["m.user_id=?", "m.status='active'", "p.deleted_at IS NULL", "p.status=?"]
     args: list[Any] = [user["id"], "archived" if archived else "active"]
     if keyword:
         where.append("p.name LIKE ?"); args.append(f"%{keyword.strip()}%")
@@ -41,14 +41,14 @@ def list_projects(
     offset, limit = pagination(page, page_size)
     rows = conn.execute(
         f"""SELECT p.*,m.role,
-        (SELECT COUNT(*) FROM memberships mm WHERE mm.project_id=p.id) member_count,
+        (SELECT COUNT(*) FROM memberships mm WHERE mm.project_id=p.id AND mm.status='active') member_count,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id AND t.deleted_at IS NULL) task_count,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id AND t.deleted_at IS NULL AND t.status='completed') completed_task_count
         FROM projects p JOIN memberships m ON m.project_id=p.id WHERE {condition}
         ORDER BY p.updated_at DESC,p.id DESC LIMIT ? OFFSET ?""", (*args, limit, offset)
     ).fetchall()
     conn.close()
-    items = [{key: row[key] for key in ("id", "name", "project_type", "description", "start_date", "end_date", "status", "role", "member_count", "task_count", "completed_task_count", "created_at", "updated_at")} for row in rows]
+    items = [{key: row[key] for key in ("id", "name", "project_type", "description", "start_date", "end_date", "status", "role", "member_count", "task_count", "completed_task_count", "classroom_id", "created_at", "updated_at")} for row in rows]
     return {"items": items, "page": page, "page_size": page_size, "total": total}
 
 
@@ -65,12 +65,22 @@ def create_project(payload: ProjectIn, request: Request = None) -> dict[str, Any
         conn.close(); fail(401, "UNAUTHORIZED", "请先登录")
     if not conn.execute("SELECT 1 FROM users WHERE id=?", (owner_id,)).fetchone():
         conn.close(); fail(404, "NOT_FOUND", "用户不存在")
-    stamp = now_iso()
+    classroom_id = payload.classroom_id
+    if classroom_id is None:
+        stamp = now_iso(); cur_class = conn.execute("INSERT INTO classrooms(name,owner_id,created_at,updated_at) VALUES (?,?,?,?)", (f"{payload.name.strip()}成员池", owner_id, stamp, stamp)); classroom_id = cur_class.lastrowid
+        conn.execute("INSERT INTO classroom_memberships(classroom_id,user_id,role,joined_at,status,updated_at) VALUES (?,?,'owner',?,'active',?)", (classroom_id, owner_id, stamp, stamp))
+    else:
+        ensure_classroom_member(conn, classroom_id, owner_id)
+        stamp = now_iso()
     cur = conn.execute(
-        "INSERT INTO projects(name,project_type,description,start_date,end_date,owner_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?, 'active',?,?)",
-        (payload.name.strip(), payload.project_type, payload.description, payload.start_date.isoformat() if payload.start_date else None, payload.end_date.isoformat() if payload.end_date else None, owner_id, stamp, stamp),
+        "INSERT INTO projects(name,project_type,description,start_date,end_date,owner_id,classroom_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?, 'active',?,?)",
+        (payload.name.strip(), payload.project_type, payload.description, payload.start_date.isoformat() if payload.start_date else None, payload.end_date.isoformat() if payload.end_date else None, owner_id, classroom_id, stamp, stamp),
     )
-    conn.execute("INSERT INTO memberships(project_id,user_id,role,joined_at,updated_at) VALUES (?,?, 'owner',?,?)", (cur.lastrowid, owner_id, stamp, stamp))
+    conn.execute("INSERT INTO memberships(project_id,user_id,role,joined_at,status,updated_at) VALUES (?,?, 'owner',?,'active',?)", (cur.lastrowid, owner_id, stamp, stamp))
+    for member_id in set(payload.member_ids or []):
+        ensure_classroom_member(conn, classroom_id, member_id)
+        if member_id != owner_id:
+            conn.execute("INSERT INTO memberships(project_id,user_id,role,joined_at,status,updated_at) VALUES (?,?, 'member',?,'active',?) ON CONFLICT(project_id,user_id) DO UPDATE SET status='active',left_at=NULL,updated_at=excluded.updated_at", (cur.lastrowid, member_id, stamp, stamp))
     project_id = cur.lastrowid
     mentor_invitations = [
         _insert_invitation(conn, project_id, owner_id, role="viewer", email=mentor.email, max_uses=1, hours=168, is_mentor=True)
@@ -144,9 +154,9 @@ def add_member(project_id: int, payload: MemberIn, request: Request) -> dict[str
         stamp = now_iso(); cur = conn.execute("INSERT INTO users(name,email,skills,max_concurrent_tasks,status,created_at,updated_at) VALUES (?,?,?,?, 'offline',?,?)", (payload.name, payload.email, json.dumps(payload.skills, ensure_ascii=False), payload.max_concurrent_tasks, stamp, stamp)); user_id = cur.lastrowid
     elif not conn.execute("SELECT 1 FROM users WHERE id=?", (user_id,)).fetchone():
         conn.close(); fail(404, "NOT_FOUND", "用户不存在")
-    if conn.execute("SELECT 1 FROM memberships WHERE project_id=? AND user_id=?", (project_id, user_id)).fetchone():
-        conn.close(); fail(409, "CONFLICT", "用户已是项目成员")
-    stamp = now_iso(); conn.execute("INSERT INTO memberships(project_id,user_id,role,joined_at,updated_at) VALUES (?,?,?,?,?)", (project_id, user_id, payload.role, stamp, stamp)); conn.commit()
+    existing = conn.execute("SELECT status FROM memberships WHERE project_id=? AND user_id=?", (project_id, user_id)).fetchone()
+    if existing and existing["status"] == "active": conn.close(); fail(409, "CONFLICT", "用户已是项目成员")
+    stamp = now_iso(); conn.execute("INSERT INTO memberships(project_id,user_id,role,joined_at,status,updated_at) VALUES (?,?,?,?,'active',?) ON CONFLICT(project_id,user_id) DO UPDATE SET role=excluded.role,status='active',left_at=NULL,updated_at=excluded.updated_at", (project_id, user_id, payload.role, stamp, stamp)); conn.commit()
     row = conn.execute("SELECT m.user_id,u.name,u.email,m.role,u.skills,u.max_concurrent_tasks,u.status,m.joined_at FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.user_id=?", (project_id, user_id)).fetchone(); conn.close()
     out = dict(row); out["skills"] = json.loads(out["skills"] or "[]"); out["current_task_count"] = 0; return out
 
@@ -157,7 +167,7 @@ def list_members(project_id: int, request: Request) -> dict[str, Any]:
     rows = conn.execute(
         """SELECT m.user_id,u.name,u.email,m.role,u.skills,u.max_concurrent_tasks,u.status,m.joined_at,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id=m.project_id AND t.assignee_id=m.user_id AND t.deleted_at IS NULL AND t.status IN ('assigned','in_progress','paused','overdue')) current_task_count
-        FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'member' THEN 1 ELSE 2 END,m.joined_at""", (project_id,)
+        FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.status='active' ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'member' THEN 1 ELSE 2 END,m.joined_at""", (project_id,)
     ).fetchall(); conn.close()
     items = []
     for row in rows:
@@ -192,7 +202,7 @@ def remove_member(project_id: int, user_id: int, request: Request) -> Response:
             conn.close(); fail(403, "FORBIDDEN", "只有主 owner 可以移除其他 owner")
         count = conn.execute("SELECT COUNT(*) n FROM memberships WHERE project_id=? AND role='owner'", (project_id,)).fetchone()["n"]
         if count <= 1: conn.close(); fail(409, "CONFLICT", "项目必须至少保留一个 owner")
-    conn.execute("DELETE FROM memberships WHERE project_id=? AND user_id=?", (project_id, user_id))
+    conn.execute("UPDATE memberships SET status='left',left_at=?,updated_at=? WHERE project_id=? AND user_id=?", (now_iso(), now_iso(), project_id, user_id))
     if project["owner_id"] == user_id:
         replacement = conn.execute("SELECT user_id FROM memberships WHERE project_id=? AND role='owner' ORDER BY joined_at LIMIT 1", (project_id,)).fetchone()
         conn.execute("UPDATE projects SET owner_id=?,updated_at=? WHERE id=?", (replacement["user_id"], now_iso(), project_id))
@@ -260,11 +270,11 @@ def get_invitation(code: str, request: Request) -> dict[str, Any]:
 
 def _accept_code(code: str, request: Request) -> dict[str, Any]:
     conn = db(); user = require_user(conn, request); row = _load_invitation(conn, code)
-    if conn.execute("SELECT 1 FROM memberships WHERE project_id=? AND user_id=?", (row["project_id"], user["id"])).fetchone():
-        conn.close(); fail(409, "CONFLICT", "用户已是项目成员")
+    existing = conn.execute("SELECT status FROM memberships WHERE project_id=? AND user_id=?", (row["project_id"], user["id"])).fetchone()
+    if existing and existing["status"] == "active": conn.close(); fail(409, "CONFLICT", "用户已是项目成员")
     if not _invitation_valid(row): conn.close(); fail(409, "CONFLICT", "邀请已过期、已撤销或已达到使用上限")
     if row["email"] and (not user["email"] or row["email"].casefold() != user["email"].casefold()): conn.close(); fail(403, "FORBIDDEN", "该邀请不适用于当前用户")
-    stamp = now_iso(); conn.execute("INSERT INTO memberships(project_id,user_id,role,joined_at,updated_at) VALUES (?,?,?,?,?)", (row["project_id"], user["id"], row["role"], stamp, stamp))
+    stamp = now_iso(); conn.execute("INSERT INTO memberships(project_id,user_id,role,joined_at,status,updated_at) VALUES (?,?,?,?,'active',?) ON CONFLICT(project_id,user_id) DO UPDATE SET role=excluded.role,status='active',left_at=NULL,updated_at=excluded.updated_at", (row["project_id"], user["id"], row["role"], stamp, stamp))
     conn.execute("UPDATE project_invitations SET used_count=used_count+1,accepted_at=?,updated_at=? WHERE id=?", (stamp, stamp, row["id"])); conn.commit(); conn.close()
     return {"project_id": row["project_id"], "user_id": user["id"], "role": row["role"], "joined_at": stamp}
 

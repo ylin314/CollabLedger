@@ -44,8 +44,8 @@ def list_tasks(
     total = conn.execute(f"SELECT COUNT(*) n FROM tasks t WHERE {condition}", args).fetchone()["n"]
     sort_sql = "CASE t.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END" if sort == "priority" else f"t.{sort}"
     offset, limit = pagination(page, page_size)
-    rows = conn.execute(f"SELECT t.*,u.name assignee_name,r.name reviewer_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN users r ON r.id=t.reviewer_id WHERE {condition} ORDER BY {sort_sql} {order.upper()},t.id {order.upper()} LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall(); conn.close()
-    return {"items": [as_task(row) for row in rows], "page": page, "page_size": page_size, "total": total}
+    rows = conn.execute(f"SELECT t.*,u.name assignee_name,r.name reviewer_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN users r ON r.id=t.reviewer_id WHERE {condition} ORDER BY {sort_sql} {order.upper()},t.id {order.upper()} LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall(); out = [as_task(row, conn) for row in rows]; conn.close()
+    return {"items": out, "page": page, "page_size": page_size, "total": total}
 
 
 @router.post("/api/projects/{project_id}/tasks", status_code=201)
@@ -58,6 +58,7 @@ def create_task(project_id: int, payload: TaskIn, request: Request = None) -> di
     if payload.status and payload.status not in TASK_STATUSES: conn.close(); fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "status", "message": "任务状态不正确"}])
     if payload.assignee_id is not None: ensure_member(conn, project_id, payload.assignee_id)
     if payload.reviewer_id is not None: ensure_member(conn, project_id, payload.reviewer_id)
+    for participant_id in payload.participant_ids: ensure_member(conn, project_id, participant_id)
     status = payload.status if request is None and payload.status else ("assigned" if payload.assignee_id is not None else "unassigned")
     actor_id = user["id"] if user is not None else (payload.owner_id if hasattr(payload, "owner_id") else None)
     stamp = now_iso()
@@ -67,12 +68,13 @@ def create_task(project_id: int, payload: TaskIn, request: Request = None) -> di
         (project_id, payload.title, payload.description, payload.assignee_id, status, payload.due_date.isoformat() if payload.due_date else None, payload.estimated_hours, payload.task_type, payload.priority, actor_id, payload.reviewer_id, stamp, stamp),
     )
     _task_log(conn, cur.lastrowid, actor_id, "created", None, status, None); conn.commit()
-    row = task_row(conn, cur.lastrowid); conn.close(); return as_task(row)
+    sync_task_participants(conn, cur.lastrowid, payload.participant_ids, payload.assignee_id)
+    conn.commit(); row = task_row(conn, cur.lastrowid); out = as_task(row, conn); conn.close(); return out
 
 
 @router.get("/api/tasks/{task_id}")
 def get_task(task_id: int, request: Request) -> dict[str, Any]:
-    conn = db(); row = task_row(conn, task_id); ensure_project_access(conn, row["project_id"], request); out = as_task(row); conn.close(); return out
+    conn = db(); row = task_row(conn, task_id); ensure_project_access(conn, row["project_id"], request); out = as_task(row, conn); conn.close(); return out
 
 
 @router.patch("/api/tasks/{task_id}")
@@ -83,7 +85,7 @@ def update_task(task_id: int, payload: TaskUpdate, request: Request = None) -> d
     if "title" in raw and raw["title"] is not None and not raw["title"].strip():
         conn.close()
         fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "title", "message": "任务标题不能为空"}])
-    raw.pop("user_id", None); note = raw.pop("note", None)
+    raw.pop("user_id", None); note = raw.pop("note", None); participant_ids = raw.pop("participant_ids", None)
     if request is not None and ("status" in raw or "quality" in raw):
         conn.close()
         field = "status" if "status" in raw else "quality"
@@ -104,6 +106,8 @@ def update_task(task_id: int, payload: TaskUpdate, request: Request = None) -> d
             if forbidden: conn.close(); fail(403, "FORBIDDEN", "普通成员只能更新任务执行字段")
     if "status" in raw and raw["status"] not in TASK_STATUSES: conn.close(); fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "status", "message": "任务状态不正确"}])
     if "assignee_id" in raw and raw["assignee_id"] is not None: ensure_member(conn, row["project_id"], raw["assignee_id"])
+    if participant_ids is not None:
+        for participant_id in participant_ids: ensure_member(conn, row["project_id"], participant_id)
     if "assignee_id" in raw and "status" not in raw:
         raw["status"] = "assigned" if raw["assignee_id"] is not None else "unassigned"
     before_status = row["status"]
@@ -115,7 +119,8 @@ def update_task(task_id: int, payload: TaskUpdate, request: Request = None) -> d
         _task_log(conn, task_id, actor, action, before_status, changed.get("status", before_status), note or ("更新字段：" + "、".join(k for k in changed if k != "updated_at")))
     elif note:
         _task_log(conn, task_id, user["id"] if user is not None else payload.user_id, "updated", before_status, before_status, note)
-    conn.commit(); row = task_row(conn, task_id); out = as_task(row); conn.close(); return out
+    if participant_ids is not None: sync_task_participants(conn, task_id, participant_ids, raw.get("assignee_id", row["assignee_id"]))
+    conn.commit(); row = task_row(conn, task_id); out = as_task(row, conn); conn.close(); return out
 
 
 @router.post("/api/tasks/{task_id}/assign")
@@ -126,7 +131,8 @@ def assign_task(task_id: int, payload: AssignIn = None, request: Request = None,
     if assignee_id is None: fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "assignee_id", "message": "负责人不能为空"}])
     conn = db(); row = task_row(conn, task_id); project, user, _ = ensure_project_access(conn, row["project_id"], request, "member", allow_internal=request is None); ensure_writable(project); ensure_member(conn, row["project_id"], assignee_id)
     before = row["status"]; stamp = now_iso(); conn.execute("UPDATE tasks SET assignee_id=?,status='assigned',updated_at=? WHERE id=?", (assignee_id, stamp, task_id))
-    _task_log(conn, task_id, user["id"] if user is not None else assignee_id, "assigned", before, "assigned", assignment_note); conn.commit(); row = task_row(conn, task_id); out = as_task(row); conn.close(); return out
+    sync_task_participants(conn, task_id, task_participant_ids(conn, task_id), assignee_id)
+    _task_log(conn, task_id, user["id"] if user is not None else assignee_id, "assigned", before, "assigned", assignment_note); conn.commit(); row = task_row(conn, task_id); out = as_task(row, conn); conn.close(); return out
 
 
 def _task_action(task_id: int, action: str, payload: TaskActionIn, request: Request, legacy_user_id: Optional[int] = None) -> dict[str, Any]:
@@ -138,7 +144,7 @@ def _task_action(task_id: int, action: str, payload: TaskActionIn, request: Requ
     }
     conn = db(); row = task_row(conn, task_id); project, user, role = ensure_project_access(conn, row["project_id"], request, "member", allow_internal=request is None); ensure_writable(project)
     actor_id = user["id"] if user is not None else legacy_user_id
-    if user is not None and role != "owner" and row["assignee_id"] != user["id"]: conn.close(); fail(403, "FORBIDDEN", "只有 owner 或任务负责人可以执行该操作")
+    if user is not None and role != "owner" and user["id"] not in task_participant_ids(conn, task_id): conn.close(); fail(403, "FORBIDDEN", "只有项目 owner 或任务参与者可以执行该操作")
     if action in ("start", "pause", "resume", "complete") and row["assignee_id"] is None: conn.close(); fail(409, "CONFLICT", "任务尚未指派负责人")
     if row["status"] not in allowed[action]: conn.close(); fail(409, "CONFLICT", f"当前状态不能执行{action}操作")
     target = targets[action]; stamp = now_iso(); values: list[Any] = [target, stamp]
@@ -202,7 +208,7 @@ def delete_task(task_id: int, request: Request) -> Response:
 @router.post("/api/tasks/{task_id}/checkins", status_code=201)
 def create_checkin(task_id: int, payload: CheckinIn, request: Request) -> dict[str, Any]:
     conn = db(); task = task_row(conn, task_id); project, user, role = ensure_project_access(conn, task["project_id"], request, "member"); ensure_writable(project); assert user is not None
-    if role != "owner" and task["assignee_id"] != user["id"]: conn.close(); fail(403, "FORBIDDEN", "只有 owner 或任务负责人可以打卡")
+    if role != "owner" and user["id"] not in task_participant_ids(conn, task_id): conn.close(); fail(403, "FORBIDDEN", "只有项目 owner 或任务参与者可以打卡")
     stamp = now_iso(); cur = conn.execute("INSERT INTO task_checkins(task_id,project_id,user_id,content,hours,blockers,created_at) VALUES (?,?,?,?,?,?,?)", (task_id, task["project_id"], user["id"], payload.content, payload.hours, payload.blockers, stamp)); conn.commit()
     row = conn.execute("SELECT c.*,u.name user_name FROM task_checkins c JOIN users u ON u.id=c.user_id WHERE c.id=?", (cur.lastrowid,)).fetchone(); conn.close(); return dict(row)
 
