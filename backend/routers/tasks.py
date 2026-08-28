@@ -44,7 +44,21 @@ def list_tasks(
     total = conn.execute(f"SELECT COUNT(*) n FROM tasks t WHERE {condition}", args).fetchone()["n"]
     sort_sql = "CASE t.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END" if sort == "priority" else f"t.{sort}"
     offset, limit = pagination(page, page_size)
-    rows = conn.execute(f"SELECT t.*,u.name assignee_name,r.name reviewer_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN users r ON r.id=t.reviewer_id WHERE {condition} ORDER BY {sort_sql} {order.upper()},t.id {order.upper()} LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall(); out = [as_task(row, conn) for row in rows]; conn.close()
+    rows = conn.execute(f"SELECT t.*,u.name assignee_name,r.name reviewer_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN users r ON r.id=t.reviewer_id WHERE {condition} ORDER BY {sort_sql} {order.upper()},t.id {order.upper()} LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+    task_ids = [row["id"] for row in rows]
+    participant_map: dict[int, list[dict[str, Any]]] = {task_id: [] for task_id in task_ids}
+    if task_ids:
+        marks = ",".join("?" for _ in task_ids)
+        participant_rows = conn.execute(f"SELECT tp.task_id,tp.user_id,tp.role,u.name,u.email FROM task_participants tp JOIN users u ON u.id=tp.user_id WHERE tp.task_id IN ({marks}) AND tp.status='active'", task_ids).fetchall()
+        for participant in participant_rows:
+            participant_map[participant["task_id"]].append({"id": participant["user_id"], "name": participant["name"], "email": participant["email"], "role": participant["role"]})
+    out = []
+    for row in rows:
+        item = as_task(row)
+        item["participants"] = participant_map.get(row["id"], [])
+        item["participant_ids"] = [person["id"] for person in item["participants"]]
+        out.append(item)
+    conn.close()
     return {"items": out, "page": page, "page_size": page_size, "total": total}
 
 
