@@ -420,6 +420,25 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
             local_skill_source = skill_source
         quality_score, quality_samples, quality_missing, quality_raw = _quality(conn, project_id, profile["id"])
         efficiency_score, efficiency_samples, efficiency_missing, efficiency_raw = _efficiency(conn, project_id, profile["id"])
+        # D6 画像兜底：当前项目样本不足时，用跨项目历史画像（时间衰减）补分
+        hist_quality = hist_efficiency = None
+        hist_profile = None
+        if quality_missing or efficiency_missing or quality_samples < 2 or efficiency_samples < 2:
+            from backend.services.profile import build_profile_internal
+            hist_profile = build_profile_internal(conn, profile["id"])
+        if hist_profile and (quality_missing or quality_samples < 2):
+            avg_q = hist_profile.get("average_quality")
+            if avg_q is not None and hist_profile.get("quality_samples"):
+                quality_score = _clip(float(avg_q) / 5.0)
+                hist_quality = float(avg_q)
+                quality_missing = False
+        if hist_profile and (efficiency_missing or efficiency_samples < 2):
+            avg_eff = hist_profile.get("average_efficiency")
+            if avg_eff is not None and hist_profile.get("efficiency_samples"):
+                eff_ratio = 1.0 / float(avg_eff)
+                efficiency_score = _clip(min(1.2, eff_ratio) / 1.2)
+                hist_efficiency = float(avg_eff)
+                efficiency_missing = False
         family_names = [item["name"] for item in families]
         skill_note = (
             f"技能族命中 {('、'.join(family_names) if family_names else '无')}"
@@ -427,8 +446,8 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
             + (f"；历史同类任务 {('、'.join(type_hits))}" if type_hits else "")
             + (f"；{ai_notes.get(profile['id'])}" if ai_notes.get(profile["id"]) else "")
         )
-        quality_note = "暂无质量评价，按中性分 0.5 计" if quality_missing else f"历史质量 {quality_raw}/5（{quality_samples} 条评价）"
-        efficiency_note = "暂无完成工时，按中性分 0.5 计" if efficiency_missing else f"预计/实际工时比 {efficiency_raw}（{efficiency_samples} 条完成记录）"
+        quality_note = ("暂无质量评价，按中性分 0.5 计" if quality_missing else (f"参考历史画像（跨项目）质量 {hist_quality}/5（{hist_profile['quality_samples']} 条评价）" if hist_quality is not None else f"历史质量 {quality_raw}/5（{quality_samples} 条评价）"))
+        efficiency_note = ("暂无完成工时，按中性分 0.5 计" if efficiency_missing else (f"参考历史画像（跨项目）工时比 {hist_efficiency}（{hist_profile['efficiency_samples']} 条完成记录）" if hist_efficiency is not None else f"预计/实际工时比 {efficiency_raw}（{efficiency_samples} 条完成记录）"))
         load_note = f"当前负载偏高 {current}/{maximum}，但仍未超过上限" if load_high else f"当前负载 {current}/{maximum}（{load_item.get('load_label') or '正常'}）"
         dimensions = {
             "skill": _dimension(skill_score, RECOMMEND_WEIGHTS["skill"], skill_note, [
@@ -443,6 +462,9 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
         }
         total = 100 * sum(item["weighted"] for item in dimensions.values())
         evidence = [line for dim in dimensions.values() for line in dim["evidence"]]
+        if hist_profile and (hist_quality is not None or hist_efficiency is not None):
+            evidence.append("部分维度参考跨项目历史画像（D6 长期画像）")
+
         summary = f"{profile['name']}适合接手「{task.get('title') or '该任务'}」：{skill_note}；{quality_note}；{efficiency_note}；{load_note}。"
         items.append({
             "user_id": profile["id"],
@@ -454,15 +476,16 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
             "reasons": {
                 "skill_match": round(skill_score, 2),
                 "matched_skills": matched,
-                "average_quality": quality_raw if not quality_missing else None,
+                "average_quality": hist_quality if hist_quality is not None else (quality_raw if not quality_missing else None),
                 "quality_samples": quality_samples,
-                "efficiency": efficiency_raw,
+                "efficiency": hist_efficiency if hist_efficiency is not None else efficiency_raw,
                 "efficiency_samples": efficiency_samples,
                 "current_load": f"{current}/{maximum}",
                 "load_level": load_item.get("load_level"),
                 "summary": summary,
                 "evidence": evidence,
             },
+            "profile_source": "historical" if (hist_profile and (hist_quality is not None or hist_efficiency is not None)) else "current",
             "source": "hybrid" if ai_score is not None else "rule",
         })
     conn.close()
