@@ -30,8 +30,11 @@ python -m alembic downgrade -1
 | --- | --- |
 | `users` | 用户账号、技能、工作状态和密码散列 |
 | `auth_sessions` | 登录会话摘要、过期与撤销状态 |
-| `projects` | 项目信息、归档和软删除状态 |
-| `memberships` | 用户在项目中的 `owner/member/viewer` 角色 |
+| `classrooms` | 长期班级成员池 |
+| `classroom_memberships` | 班级成员加入/退出历史与角色 |
+| `projects` | 项目信息、所属班级、归档和软删除状态 |
+| `memberships` | 用户在项目中的角色、加入/退出状态 |
+| `task_participants` | 任务多人参与关系及历史 |
 | `project_invitations` | 邀请码、角色、有效期和使用次数 |
 | `tasks` | 任务、负责人、状态、工时和质量 |
 | `task_logs` | 任务状态与字段变化记录 |

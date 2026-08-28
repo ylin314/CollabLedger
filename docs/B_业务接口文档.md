@@ -963,7 +963,7 @@ DELETE /api/contributions/{contribution_id}
 - 历史项目列表：`GET /api/projects?archived=true`（见 2.1）复用。
 - 归档项目的任务/贡献/评价仍可通过对应只读接口访问。
 
-> 契约中的 `GET /api/users/me/history`（跨项目历史聚合）归属 D6 长期画像，尚未实现，见 `API接口契约.md` 第 11 章。B 侧的职责边界到“归档 + 只读保留”为止。
+> `GET /api/users/me/history` 已实现为真实跨项目履历聚合；同班成员可通过带 user id 的履历接口查看共享协作事实。完整画像计算、来源解释和更细粒度授权仍归入 D6/C10 后续范围。
 
 ---
 
