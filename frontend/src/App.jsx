@@ -599,6 +599,7 @@ function App() {
                   online={online}
                   setProject={setProject}
                   onToast={setToast}
+                  onReload={() => loadProject(project.id)}
                 />
               )}{" "}
               {active === "report" && (

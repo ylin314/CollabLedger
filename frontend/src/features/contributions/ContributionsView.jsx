@@ -2,6 +2,7 @@ import { useState } from "react";
 import { sendJson } from "../../api/client";
 import { formatDate } from "../../shared/core";
 import { Metric, PageTitle } from "../../shared/components";
+import { GitHubIntegration } from "./GitHubIntegration";
 
 function ContributionsView({
   project,
@@ -76,6 +77,7 @@ function ContributionsView({
           ) : null
         }
       />
+      <GitHubIntegration project={project} onToast={onToast} onReload={onReload} />
       <div className="ledger-summary">
         <Metric
           label="本周贡献"
