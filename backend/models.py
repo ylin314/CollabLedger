@@ -35,6 +35,28 @@ class Project(Base):
     updated_at: Mapped[str | None] = mapped_column(String(40))
     archived_at: Mapped[str | None] = mapped_column(String(40))
     deleted_at: Mapped[str | None] = mapped_column(String(40))
+    classroom_id: Mapped[int | None] = mapped_column(ForeignKey("classrooms.id", ondelete="SET NULL"))
+
+
+class Classroom(Base):
+    __tablename__ = "classrooms"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class ClassroomMembership(Base):
+    __tablename__ = "classroom_memberships"
+    classroom_id: Mapped[int] = mapped_column(ForeignKey("classrooms.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(20), server_default=text("'student'"), nullable=False)
+    joined_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    left_at: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(20), server_default=text("'active'"), nullable=False)
+    updated_at: Mapped[str | None] = mapped_column(String(40))
 
 
 class Membership(Base):
@@ -44,6 +66,8 @@ class Membership(Base):
     role: Mapped[str] = mapped_column(String(20), server_default=text("'member'"), nullable=False)
     joined_at: Mapped[str] = mapped_column(String(40), nullable=False)
     updated_at: Mapped[str | None] = mapped_column(String(40))
+    left_at: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(20), server_default=text("'active'"), nullable=False)
 
 
 class Task(Base):
@@ -65,6 +89,17 @@ class Task(Base):
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
     deleted_at: Mapped[str | None] = mapped_column(String(40))
+
+
+class TaskParticipant(Base):
+    __tablename__ = "task_participants"
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(20), server_default=text("'collaborator'"), nullable=False)
+    joined_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    left_at: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(20), server_default=text("'active'"), nullable=False)
+    updated_at: Mapped[str | None] = mapped_column(String(40))
 
 
 class AuditLog(Base):
@@ -215,6 +250,8 @@ weekly_reports = table("weekly_reports",
 
 Index("idx_users_email", User.email)
 Index("idx_memberships_user", Membership.user_id, Membership.project_id)
+Index("idx_classroom_memberships_user", ClassroomMembership.user_id, ClassroomMembership.classroom_id)
+Index("idx_task_participants_user", TaskParticipant.user_id, TaskParticipant.task_id)
 Index("idx_tasks_project", Task.project_id, Task.deleted_at, Task.status)
 Index("idx_checkins_project", task_checkins.c.project_id, task_checkins.c.created_at)
 Index("idx_contributions_project", contributions.c.project_id, contributions.c.deleted_at, contributions.c.status)

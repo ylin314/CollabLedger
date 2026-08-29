@@ -23,6 +23,7 @@ from backend.routers import ALL_ROUTERS
 from backend.routers.agent import *
 from backend.routers.analytics import *
 from backend.routers.auth_users import *
+from backend.routers.classrooms import *
 from backend.routers.contributions import *
 from backend.routers.projects import *
 from backend.routers.system import *

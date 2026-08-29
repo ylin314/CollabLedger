@@ -593,6 +593,12 @@ POST /api/invitations/{code}/accept
 
 ## 5. 任务接口
 
+### 动态班级与多人参与补充
+
+班级成员池与项目队伍分离：`GET/POST /api/classrooms` 管理长期班级空间，`GET/POST/PATCH/DELETE /api/classrooms/{id}/members` 管理成员加入、退出和角色。创建项目时可传 `classroom_id` 与 `member_ids`，项目只保留本次临时队伍；项目成员移除采用状态退出，历史任务和贡献仍可追溯。
+
+任务创建和更新支持 `participant_ids` 数组。任务仍可设置一个 `assignee_id` 作为负责人，但所有 active 参与者都可以推进任务状态和提交任务打卡；任务响应新增 `participant_ids` 与 `participants`。
+
 ### 5.1 任务状态模型
 
 ```text
@@ -2102,7 +2108,16 @@ Query 参数：`project_type`、`year`、`page`、`page_size`。
 }
 ```
 
-### 11.2 获取个人协作画像
+### 11.2 获取跨项目协作履历
+
+```http
+GET /api/users/me/history
+GET /api/users/profile/{user_id}/history
+```
+
+需要登录。第一种读取当前用户；第二种仅允许读取与当前用户存在 active 共同班级关系的成员。返回真实项目、任务参与和贡献记录，不生成推测性标签。
+
+### 11.3 获取个人协作画像
 
 ```http
 GET /api/users/me/profile
@@ -2143,7 +2158,7 @@ GET /api/users/me/profile
 - 不输出人格评价、道德评价或公开排名
 - 用户可查看数据来源和计算口径
 
-### 11.3 获取跨项目合作关系
+### 11.4 获取跨项目合作关系
 
 ```http
 GET /api/users/me/collaborations

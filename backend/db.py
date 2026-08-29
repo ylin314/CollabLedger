@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.models import Base
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = r'''
 CREATE TABLE IF NOT EXISTS users (
@@ -28,11 +28,23 @@ CREATE TABLE IF NOT EXISTS projects (
  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, project_type TEXT,
  description TEXT, start_date TEXT, end_date TEXT, owner_id INTEGER,
  status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT,
- archived_at TEXT, deleted_at TEXT, FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE SET NULL
+ archived_at TEXT, deleted_at TEXT, classroom_id INTEGER,
+ FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS classrooms (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT,
+ owner_id INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS classroom_memberships (
+ classroom_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT NOT NULL DEFAULT 'student',
+ joined_at TEXT NOT NULL, left_at TEXT, status TEXT NOT NULL DEFAULT 'active', updated_at TEXT,
+ PRIMARY KEY(classroom_id,user_id), FOREIGN KEY(classroom_id) REFERENCES classrooms(id) ON DELETE CASCADE,
+ FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS memberships (
  project_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT NOT NULL DEFAULT 'member',
- joined_at TEXT NOT NULL, updated_at TEXT, PRIMARY KEY(project_id,user_id),
+ joined_at TEXT NOT NULL, left_at TEXT, status TEXT NOT NULL DEFAULT 'active', updated_at TEXT, PRIMARY KEY(project_id,user_id),
  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -46,6 +58,12 @@ CREATE TABLE IF NOT EXISTS tasks (
  FOREIGN KEY(assignee_id) REFERENCES users(id) ON DELETE SET NULL,
  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL,
  FOREIGN KEY(reviewer_id) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS task_participants (
+ task_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT NOT NULL DEFAULT 'collaborator',
+ joined_at TEXT NOT NULL, left_at TEXT, status TEXT NOT NULL DEFAULT 'active', updated_at TEXT,
+ PRIMARY KEY(task_id,user_id), FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+ FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS task_logs (
  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, user_id INTEGER,
@@ -424,8 +442,8 @@ def initialize(path: str | Path | None = None) -> None:
     conn.executescript(SCHEMA_SQL)
     # Forward-compatible upgrades for databases created by pre-Alembic versions.
     _add_columns(conn, "users", {"password_hash": "TEXT", "updated_at": "TEXT"})
-    _add_columns(conn, "projects", {"status": "TEXT NOT NULL DEFAULT 'active'", "updated_at": "TEXT", "archived_at": "TEXT", "deleted_at": "TEXT"})
-    _add_columns(conn, "memberships", {"updated_at": "TEXT"})
+    _add_columns(conn, "projects", {"status": "TEXT NOT NULL DEFAULT 'active'", "updated_at": "TEXT", "archived_at": "TEXT", "deleted_at": "TEXT", "classroom_id": "INTEGER"})
+    _add_columns(conn, "memberships", {"updated_at": "TEXT", "left_at": "TEXT", "status": "TEXT NOT NULL DEFAULT 'active'"})
     _add_columns(conn, "tasks", {"priority": "TEXT NOT NULL DEFAULT 'medium'", "created_by": "INTEGER", "reviewer_id": "INTEGER", "deleted_at": "TEXT"})
     _add_columns(conn, "task_logs", {"from_status": "TEXT", "to_status": "TEXT"})
     _add_columns(conn, "project_invitations", {"max_uses": "INTEGER NOT NULL DEFAULT 1", "used_count": "INTEGER NOT NULL DEFAULT 0", "revoked": "INTEGER NOT NULL DEFAULT 0", "revoked_at": "TEXT", "updated_at": "TEXT", "is_mentor": "INTEGER NOT NULL DEFAULT 0"})
@@ -441,6 +459,22 @@ def initialize(path: str | Path | None = None) -> None:
         "assigned_at": "TEXT",
     })
     _add_columns(conn, "task_review_history", {"updated_at": "TEXT"})
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS classrooms (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, owner_id INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS classroom_memberships (classroom_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT NOT NULL DEFAULT 'student', joined_at TEXT NOT NULL, left_at TEXT, status TEXT NOT NULL DEFAULT 'active', updated_at TEXT, PRIMARY KEY(classroom_id,user_id));
+        CREATE TABLE IF NOT EXISTS task_participants (task_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT NOT NULL DEFAULT 'collaborator', joined_at TEXT NOT NULL, left_at TEXT, status TEXT NOT NULL DEFAULT 'active', updated_at TEXT, PRIMARY KEY(task_id,user_id));
+    """)
+    conn.execute("UPDATE memberships SET status=COALESCE(status,'active')")
+    # Backfill one class per legacy project owner and attach existing members.
+    legacy = conn.execute("SELECT id,owner_id,name FROM projects WHERE classroom_id IS NULL AND owner_id IS NOT NULL").fetchall()
+    for project_id, owner_id, project_name in legacy:
+        stamp = now_iso()
+        cur = conn.execute("INSERT INTO classrooms(name,description,owner_id,created_at,updated_at) VALUES (?,?,?,?,?)", (f"{project_name}成员池", "由历史项目自动建立", owner_id, stamp, stamp))
+        classroom_id = cur.lastrowid
+        conn.execute("UPDATE projects SET classroom_id=? WHERE id=?", (classroom_id, project_id))
+        members = conn.execute("SELECT user_id,role,joined_at FROM memberships WHERE project_id=?", (project_id,)).fetchall()
+        for user_id, role, joined_at in members:
+            conn.execute("INSERT OR IGNORE INTO classroom_memberships(classroom_id,user_id,role,joined_at,status,updated_at) VALUES (?,?,?,?, 'active',?)", (classroom_id, user_id, 'teacher' if role == 'owner' else 'student', joined_at or stamp, stamp))
     if "updated_at" in _columns(conn, "task_review_history"):
         conn.execute("UPDATE task_review_history SET updated_at=COALESCE(updated_at,created_at)")
     stamp = now_iso()

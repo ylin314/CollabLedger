@@ -60,6 +60,23 @@ class ProjectIn(BaseModel):
     end_date: Optional[date] = None
     owner_id: Optional[int] = None
     mentors: list[MentorIn] = Field(default_factory=list)
+    classroom_id: Optional[int] = None
+    member_ids: list[int] = Field(default_factory=list)
+
+
+class ClassroomIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ClassroomMemberIn(BaseModel):
+    user_id: Optional[int] = None
+    email: Optional[str] = None
+    role: Literal["teacher", "student"] = "student"
+
+
+class ClassroomRoleUpdate(BaseModel):
+    role: Literal["owner", "teacher", "student"]
 
 
 class ProjectUpdate(BaseModel):
@@ -118,6 +135,7 @@ class TaskIn(BaseModel):
     due_date: Optional[date] = None
     estimated_hours: Optional[float] = Field(default=None, ge=0)
     status: Optional[str] = None
+    participant_ids: list[int] = Field(default_factory=list)
 
 
 class TaskUpdate(BaseModel):
@@ -134,6 +152,7 @@ class TaskUpdate(BaseModel):
     status: Optional[str] = None
     user_id: Optional[int] = None
     note: Optional[str] = Field(default=None, max_length=1000)
+    participant_ids: Optional[list[int]] = None
 
 
 class AssignIn(BaseModel):
