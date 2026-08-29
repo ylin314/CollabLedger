@@ -158,3 +158,47 @@ def test_disconnect_removes_connection(monkeypatch, tmp_path):
     assert owner.post("/api/integrations/github/disconnect").status_code == 200
     status = owner.get("/api/integrations/github/status").json()
     assert status["connected"] is False and status["projects"] == []
+
+def test_callback_missing_params_redirects_with_flag(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "callback-missing.db")
+    owner = _client(); _account(owner, "组长", "cb-missing@example.com")
+    no_params = owner.get("/api/integrations/github/callback")
+    assert no_params.status_code == 307 and "missing_code_or_state" in no_params.headers["location"]
+    no_code = owner.get("/api/integrations/github/callback", params={"state": "whatever"})
+    assert no_code.status_code == 307 and "missing_code_or_state" in no_code.headers["location"]
+    error = owner.get("/api/integrations/github/callback", params={"code": "abc", "state": "s", "error": "access_denied"})
+    assert error.status_code == 307 and "error=access_denied" in error.headers["location"]
+
+
+def test_status_not_connected_before_oauth(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "status-notconnected.db")
+    owner = _client(); _account(owner, "组长", "st-nc@example.com")
+    status = owner.get("/api/integrations/github/status").json()
+    assert status["connected"] is False and status["projects"] == []
+
+
+def test_sync_requires_connection_and_repos(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "sync-requires.db")
+    owner = _client(); _account(owner, "组长", "sync-req@example.com")
+    pid = _project(owner)
+    not_connected = owner.post(f"/api/projects/{pid}/integrations/github/sync", json={"config": {"repos": ["demo/repo"]}})
+    assert not_connected.status_code == 400
+    assert "尚未连接 GitHub" in not_connected.json()["error"]["message"]
+
+    _fake_github(monkeypatch)
+    state = owner.get("/api/integrations/github/auth-url").json()
+    owner.get("/api/integrations/github/callback", params={"code": "abc", "state": state["state"]})
+    empty = owner.post(f"/api/projects/{pid}/integrations/github/sync", json={"config": {"repos": []}})
+    assert empty.status_code == 422
+
+
+def test_disconnect_then_status_not_connected(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "disconnect-status.db")
+    _fake_github(monkeypatch)
+    owner = _client(); _account(owner, "组长", "dc-st@example.com")
+    state = owner.get("/api/integrations/github/auth-url").json()
+    owner.get("/api/integrations/github/callback", params={"code": "abc", "state": state["state"]})
+    assert owner.get("/api/integrations/github/status").json()["connected"] is True
+    assert owner.post("/api/integrations/github/disconnect").status_code == 200
+    status = owner.get("/api/integrations/github/status").json()
+    assert status["connected"] is False and status["projects"] == []
