@@ -327,7 +327,8 @@ def _weekly_markdown(data: dict[str, Any]) -> str:
     if members:
         lines.append("> 不排名，仅展示每人本周事实与产出摘要")
         for member in members:
-            lines.append(f"- {member['name']}：{member.get('summary') or f"完成 {member['completed_tasks']} 项、打卡 {member['checkin_count']} 次、工时 {member['actual_hours']} 小时"}")
+            summary = member.get("summary") or f'完成 {member["completed_tasks"]} 项、打卡 {member["checkin_count"]} 次、工时 {member["actual_hours"]} 小时'
+            lines.append(f"- {member['name']}：{summary}")
     else:
         lines.append("- 本周暂无成员产出数据")
     lines.extend(["", "## 完成亮点"])
