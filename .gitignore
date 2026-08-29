@@ -24,3 +24,4 @@ stage2-demo.db
 # 浏览器自动化与本地截图产物
 .playwright-mcp/
 stage2-*.png
+CLAUDE.md
