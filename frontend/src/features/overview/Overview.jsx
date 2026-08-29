@@ -6,6 +6,7 @@ import {
   TrendingUp,
   Users,
 } from "lucide-react";
+import { useState } from "react";
 import { formatDate, greetingStamp, greetingTitle } from "../../shared/core";
 import {
   MemberCard,
@@ -13,6 +14,7 @@ import {
   PageTitle,
   TaskRow,
 } from "../../shared/components";
+import { ProfileModal } from "../profile/ProfileModal";
 
 function Overview({
   auth,
@@ -32,6 +34,7 @@ function Overview({
   canWrite,
   canManageTask,
 }) {
+  const [profileMember, setProfileMember] = useState(null);
   const riskCount = risks?.count ?? (risks?.risks || []).length;
   const highLoad = (memberLoad?.members || []).filter(
     (item) => item.load_level === "high",
@@ -132,7 +135,12 @@ function Overview({
       </div>
       <div className="member-grid">
         {memberStats.map((m, i) => (
-          <MemberCard key={m.id} member={m} index={i} />
+          <MemberCard
+            key={m.id}
+            member={m}
+            index={i}
+            onProfile={(member) => setProfileMember({ ...member, id: member.user_id || member.id })}
+          />
         ))}
       </div>
       <div className="dashboard-columns">
@@ -186,6 +194,12 @@ function Overview({
           </div>
         </section>
       </div>
+      {profileMember && (
+        <ProfileModal
+          user={profileMember}
+          onClose={() => setProfileMember(null)}
+        />
+      )}
     </>
   );
 }

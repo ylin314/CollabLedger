@@ -36,7 +36,7 @@ function Metric({ label, value, hint, trend, color }) {
   );
 }
 
-function MemberCard({ member, index }) {
+function MemberCard({ member, index, onProfile }) {
   const status = {
     online: ["协作中", "online"],
     busy: ["专注中", "busy"],
@@ -86,6 +86,11 @@ function MemberCard({ member, index }) {
         <span>
           本周完成 <b>{member.done}</b>
         </span>
+        {onProfile && (
+          <button className="profile-link" onClick={() => onProfile(member)}>
+            画像
+          </button>
+        )}
       </div>
       <div className={`load-bar ${loadLevel}`}>
         <i
@@ -271,6 +276,9 @@ function RecommendCard({ item, selected, onSelect, onAccept }) {
           <span className={`source-chip ${item.source !== "rule" ? "ai" : ""}`}>
             {sourceLabel(item.source || dims.skill?.source)}
           </span>
+          {item.profile_source === "historical" && (
+            <span className="source-chip ai">参考历史画像</span>
+          )}
         </div>
         <p className="muted-note">{dims.skill?.note}</p>
       </div>

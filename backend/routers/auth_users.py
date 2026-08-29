@@ -14,6 +14,7 @@ from fastapi.responses import PlainTextResponse, Response
 from backend.auth import COOKIE_NAME, create_session, hash_password, iso_utc, revoke_session, verify_password
 from backend.core.context import *
 from backend.schemas import *
+from backend.services.profile import build_profile_internal, profile_payload
 
 router = APIRouter()
 
@@ -126,6 +127,28 @@ def list_users(request: Request) -> dict[str, Any]:
     return {"items": [public_user(row) for row in rows]}
 
 
+@router.get("/api/users/{user_id}/profile")
+def get_user_profile(user_id: int, request: Request) -> dict[str, Any]:
+    conn = db()
+    current = require_user(conn, request)
+    target = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not target:
+        conn.close()
+        fail(404, "NOT_FOUND", "用户不存在")
+    allowed = current["id"] == target["id"]
+    if not allowed:
+        same_project = conn.execute(
+            "SELECT 1 FROM memberships a JOIN memberships b ON a.project_id=b.project_id WHERE a.user_id=? AND b.user_id=? LIMIT 1",
+            (current["id"], target["id"]),
+        ).fetchone()
+        allowed = same_project is not None
+    if not allowed:
+        conn.close()
+        fail(403, "FORBIDDEN", "无权查看该成员画像")
+    profile = build_profile_internal(conn, target["id"])
+    conn.close()
+    return profile_payload(profile)
+
 @router.get("/api/users/{user_id}")
 def get_user(user_id: int, request: Request) -> dict[str, Any]:
     conn = db(); require_user(conn, request)
@@ -133,4 +156,4 @@ def get_user(user_id: int, request: Request) -> dict[str, Any]:
     if not row: fail(404, "NOT_FOUND", "用户不存在")
     return public_user(row)
 
-__all__ = ['register', 'login', 'logout', 'me', 'update_me', 'create_user', 'list_users', 'get_user']
+__all__ = ['register', 'login', 'logout', 'me', 'update_me', 'create_user', 'list_users', 'get_user', 'get_user_profile']
