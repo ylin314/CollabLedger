@@ -306,7 +306,7 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
               {role === "owner" && (
                 <button className="danger-text" onClick={clearSession}>
                   <Trash2 size={14} />
-                  清空当前
+                  删除当前对话
                 </button>
               )}
             </div>
