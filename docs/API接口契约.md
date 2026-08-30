@@ -2166,9 +2166,10 @@ GET /api/users/profile/{user_id}/history
 
 ```http
 GET /api/users/me/profile
+GET /api/users/{user_id}/profile
 ```
 
-权限：需要登录。
+权限：需要登录。本人可读取完整自身画像；读取他人时，双方必须仍在至少一个未删除项目中保持 active，且只聚合目标用户授权的来源项目。
 
 成功响应：`200 OK`
 
@@ -2177,31 +2178,56 @@ GET /api/users/me/profile
   "user_id": 1,
   "name": "张三",
   "project_count": 3,
+  "projects_count": 3,
   "completed_task_count": 42,
   "average_quality": 4.3,
+  "quality_samples": 38,
   "efficiency": 1.1,
+  "average_efficiency": 1.1,
+  "efficiency_samples": 30,
   "on_time_rate": 0.88,
+  "on_time_samples": 25,
   "top_skills": [
-    { "skill": "后端", "score": 88 },
-    { "skill": "Python", "score": 84 }
+    {
+      "skill": "后端开发",
+      "score": 88,
+      "sample_count": 12,
+      "source": "completed_and_assigned_tasks",
+      "cold_start": false
+    }
   ],
+  "skill_families": [],
+  "skill_strength": {},
   "collaboration_types": [
-    { "type": "code", "ratio": 0.55 },
-    { "type": "document", "ratio": 0.25 }
+    { "type": "code", "count": 36, "ratio": 0.55 }
   ],
+  "contributions_total": 65,
+  "active_months": 8,
+  "declared_skills": ["Python"],
   "data_sources": [
     { "source": "completed_tasks", "count": 42 },
     { "source": "confirmed_contributions", "count": 65 }
   ],
-  "generated_at": "2026-08-25T10:00:00Z"
+  "source_projects": [
+    { "project_id": 3, "project_name": "课程项目", "project_status": "archived", "membership_status": "left" }
+  ],
+  "calculation_notes": {
+    "skills": "历史技能分只使用真实任务命中、完成状态和质量；自报技能仅作冷启动标签",
+    "contributions": "只统计 confirmed 且未删除贡献，pending/disputed 不进入画像"
+  },
+  "generated_at": "2026-08-30T10:00:00Z",
+  "updated_at": "2026-08-30T10:00:00Z"
 }
 ```
 
 规则：
 
-- 画像只基于项目成果和已确认贡献
-- 不输出人格评价、道德评价或公开排名
-- 用户可查看数据来源和计算口径
+- 对外以 `project_count/completed_task_count/efficiency/on_time_rate/top_skills/collaboration_types/data_sources/generated_at` 为标准；深化字段附加返回。
+- 画像只基于项目成果、工时记录和已确认贡献，不读取 Agent 对话。
+- `users.skills` 仅为自报技能/冷启动信息，不计作历史完成证据。
+- `efficiency` 与 `average_efficiency` 同义，都是完成任务实际工时/预估工时比；不与打卡工时相加。
+- `contributions_total/collaboration_types/active_months` 中的贡献只使用 confirmed。
+- 不输出人格评价、道德评价或公开排名；用户可查看来源和计算口径。
 
 ### 11.4 获取跨项目合作关系
 
@@ -2221,22 +2247,30 @@ GET /api/users/me/collaborations
       "name": "李四",
       "shared_project_count": 3,
       "shared_task_count": 12,
-      "last_collaborated_at": "2026-12-20",
-      "cooperation_score": 82
+      "last_collaborated_at": "2026-08-30T09:00:00Z",
+      "cooperation_score": 100,
+      "source_project_ids": [1, 2, 3],
+      "calculation": {
+        "formula": "min(100, 共同项目数×30 + min(共同任务数,10)×5)",
+        "scope": "双方均参与、双方均授权且项目未删除；共同任务要求双方均为负责人或参与者",
+        "personality_inference": false
+      }
     }
-  ]
+  ],
+  "generated_at": "2026-08-30T10:00:00Z",
+  "calculation_notes": "合作分只表达共同项目/共同任务数量，不代表人格、道德或公开排名。"
 }
 ```
 
-只统计双方共同参与且已授权用于协作分析的项目。
+只统计双方共同参与、双方均授权且未删除的项目；任一方撤销该项目授权后立即从结果移除。
 
-### 11.4 获取长期任务推荐
+### 11.5 获取长期任务方向推荐
 
 ```http
 GET /api/users/me/recommendations
 ```
 
-权限：需要登录。
+权限：需要登录。该接口只读，不修改项目任务、负责人、评审人或导师。
 
 成功响应：`200 OK`
 
@@ -2244,23 +2278,30 @@ GET /api/users/me/recommendations
 {
   "recommendations": [
     {
-      "skill": "后端",
+      "skill": "后端开发",
       "score": 88,
-      "reason": "历史完成后端任务质量较高，效率稳定。"
+      "reason": "授权历史中有 12 个相关任务证据，质量均值 4.3/5，工时比 1.1。",
+      "sample_count": 12,
+      "data_sources": ["assigned_tasks", "completed_tasks", "quality_reviews"],
+      "source_project_ids": [1, 2, 3],
+      "cold_start": false
     }
-  ]
+  ],
+  "data_status": "retained",
+  "generated_at": "2026-08-30T10:00:00Z",
+  "calculation_notes": "历史方向使用真实任务技能强度；冷启动固定 50 分并显式标记，不伪装成历史能力。"
 }
 ```
 
-新用户缺少历史数据时，使用技能和负载规则推荐。
+无历史但有自报技能时，返回 `score=50`、`sample_count=0`、`cold_start=true`、`data_sources=["self_declared_skills"]`。授权状态为 frozen/deleted 时返回空列表和明确说明。
 
-### 11.5 获取数据授权设置
+### 11.6 获取数据授权设置
 
 ```http
 GET /api/users/me/authorizations
 ```
 
-权限：需要登录。
+权限：需要登录。默认不写库；未创建授权记录时按“全局启用、保留数据”读取。
 
 成功响应：`200 OK`
 
@@ -2268,11 +2309,25 @@ GET /api/users/me/authorizations
 {
   "cross_project_profile": true,
   "collaboration_analysis": true,
-  "history_visible": true
+  "history_visible": true,
+  "global_enabled": true,
+  "data_status": "retained",
+  "retention_mode": "retained",
+  "project_overrides": { "3": false },
+  "projects": [
+    {
+      "project_id": 3,
+      "project_name": "课程项目",
+      "project_status": "archived",
+      "membership_status": "left",
+      "override": false,
+      "enabled": false
+    }
+  ]
 }
 ```
 
-### 11.6 更新数据授权
+### 11.7 更新数据授权
 
 ```http
 PATCH /api/users/me/authorizations
@@ -2284,18 +2339,25 @@ PATCH /api/users/me/authorizations
 
 ```json
 {
-  "cross_project_profile": false,
-  "collaboration_analysis": true,
-  "history_visible": true
+  "global_enabled": false,
+  "project_overrides": {
+    "3": true,
+    "4": null
+  }
 }
 ```
 
-成功响应：`200 OK`
+`true/false` 分别允许/关闭项目，`null` 删除项目覆盖并跟随全局。兼容字段 `cross_project_profile/collaboration_analysis/history_visible` 仍可传入，但本产品两档 UI 下三者必须一致。
 
-返回更新后的授权对象。
+成功响应：`200 OK`，返回更新后的完整授权对象。关闭全局且无启用覆盖时为 frozen，停止跨项目分析但保留团队原始数据。
 
-用户关闭授权后，相关跨项目分析必须停止使用其数据；个人画像必须停止更新或删除。
+### 11.8 删除画像派生数据
 
+```http
+DELETE /api/users/me/profile-data
+```
+
+权限：需要登录。删除项目覆盖和画像授权派生状态，置 `data_status=deleted`；不删除同一真实项目的任务、贡献、工时或周报。
 ---
 
 ## 12. 接口实现优先级

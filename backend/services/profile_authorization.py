@@ -1,4 +1,4 @@
-"""历史画像授权的最小两档模型：全局开关 + 项目级白名单/覆盖。"""
+"""D6 历史画像授权：默认启用，全局开关 + 项目级覆盖。"""
 from __future__ import annotations
 
 from typing import Any, Mapping, Optional
@@ -8,13 +8,27 @@ from backend.db import now_iso
 
 RETENTION_RETAINED = "retained"
 RETENTION_DELETED = "deleted"
+RETENTION_FROZEN = "frozen"
 
 
-def _ensure_authorization(conn, user_id: int):
-    row = conn.execute(
+def _default_authorization() -> dict[str, Any]:
+    return {
+        "global_enabled": 1,
+        "retention_mode": RETENTION_RETAINED,
+        "deleted_at": None,
+        "updated_at": None,
+    }
+
+
+def _authorization(conn, user_id: int):
+    return conn.execute(
         "SELECT * FROM profile_authorizations WHERE user_id=?",
         (user_id,),
     ).fetchone()
+
+
+def _ensure_authorization(conn, user_id: int):
+    row = _authorization(conn, user_id)
     if row is not None:
         return row
     stamp = now_iso()
@@ -22,10 +36,7 @@ def _ensure_authorization(conn, user_id: int):
         "INSERT INTO profile_authorizations(user_id,global_enabled,retention_mode,updated_at) VALUES (?,?,?,?)",
         (user_id, 1, RETENTION_RETAINED, stamp),
     )
-    return conn.execute(
-        "SELECT * FROM profile_authorizations WHERE user_id=?",
-        (user_id,),
-    ).fetchone()
+    return _authorization(conn, user_id)
 
 
 def _override(conn, user_id: int, project_id: int):
@@ -36,7 +47,7 @@ def _override(conn, user_id: int, project_id: int):
 
 
 def _data_status(conn, user_id: int, auth=None) -> str:
-    auth = auth or _ensure_authorization(conn, user_id)
+    auth = auth or _authorization(conn, user_id) or _default_authorization()
     if auth["retention_mode"] == RETENTION_DELETED:
         return RETENTION_DELETED
     if bool(auth["global_enabled"]):
@@ -45,12 +56,12 @@ def _data_status(conn, user_id: int, auth=None) -> str:
         "SELECT 1 FROM profile_project_authorizations WHERE user_id=? AND enabled=1 LIMIT 1",
         (user_id,),
     ).fetchone()
-    return RETENTION_RETAINED if enabled_override else "frozen"
+    return RETENTION_RETAINED if enabled_override else RETENTION_FROZEN
 
 
 def is_profile_enabled_for_project(conn, user_id: int, project_id: int) -> bool:
-    """判断该用户在某个来源项目的历史数据是否允许被跨项目使用。"""
-    auth = _ensure_authorization(conn, user_id)
+    """判断某来源项目是否获准用于跨项目画像/协作分析；纯读取不隐式落库。"""
+    auth = _authorization(conn, user_id) or _default_authorization()
     if auth["retention_mode"] == RETENTION_DELETED:
         return False
     override = _override(conn, user_id, project_id)
@@ -66,42 +77,39 @@ def profile_source_project_ids(
     *,
     self_view: bool = False,
 ) -> list[int]:
-    """返回画像聚合可读取的来源项目。
+    """返回画像可读取的真实来源项目。
 
-    推荐/他人查看时只允许用户曾参与、且被用户授权的历史项目；当前目标项目
-    始终保留，用于同项目事实。本人查看自己的画像时不受分享开关影响。
+    本人查看可读取自己 active/left 的未删除项目；跨项目分析只读取明确授权项目。
+    D1 针对某个当前项目推荐时，当前项目事实始终可用，其他历史项目仍受授权控制。
     """
     rows = conn.execute(
-        """SELECT DISTINCT p.id,p.classroom_id
+        """SELECT DISTINCT p.id
            FROM memberships m JOIN projects p ON p.id=m.project_id
-           WHERE m.user_id=? AND m.status IN ('active','left') AND p.deleted_at IS NULL""",
+           WHERE m.user_id=? AND m.status IN ('active','left') AND p.deleted_at IS NULL
+           ORDER BY p.id""",
         (user_id,),
     ).fetchall()
-    if self_view or target_project_id is None:
-        return [int(row["id"]) for row in rows]
-
-    target = conn.execute(
-        "SELECT id,classroom_id FROM projects WHERE id=? AND deleted_at IS NULL",
+    existing = [int(row["id"]) for row in rows]
+    if self_view:
+        return existing
+    if target_project_id is None:
+        return [project_id for project_id in existing if is_profile_enabled_for_project(conn, user_id, project_id)]
+    target_exists = conn.execute(
+        "SELECT 1 FROM projects WHERE id=? AND deleted_at IS NULL",
         (target_project_id,),
     ).fetchone()
-    if target is None:
+    if target_exists is None:
         return []
-    allowed: list[int] = []
-    for row in rows:
-        source_id = int(row["id"])
-        if source_id == target_project_id:
-            allowed.append(source_id)
-            continue
-        # 当前访问者已经通过目标项目成员权限进入；候选人的历史来源项目
-        # 只要其本人曾参与且获得全局/项目授权即可使用。项目白名单负责
-        # 精确控制来源项目，避免把“班级池”误当成唯一团队边界。
-        if is_profile_enabled_for_project(conn, user_id, source_id):
-            allowed.append(source_id)
-    return allowed
+    return [
+        project_id
+        for project_id in existing
+        if project_id == target_project_id or is_profile_enabled_for_project(conn, user_id, project_id)
+    ]
 
 
 def get_authorization(conn, user_id: int) -> dict[str, Any]:
-    auth = _ensure_authorization(conn, user_id)
+    """读取授权；默认值不产生隐式写操作。"""
+    auth = _authorization(conn, user_id) or _default_authorization()
     overrides = conn.execute(
         "SELECT project_id,enabled,updated_at FROM profile_project_authorizations WHERE user_id=? ORDER BY project_id",
         (user_id,),
@@ -132,18 +140,16 @@ def get_authorization(conn, user_id: int) -> dict[str, Any]:
                 "enabled": enabled,
             }
         )
+    enabled_globally = data_status != RETENTION_DELETED and global_enabled
     return {
-        # 兼容 API 契约的三字段；当前产品决策下它们共享同一全局开关。
-        "cross_project_profile": data_status != RETENTION_DELETED and global_enabled,
-        "collaboration_analysis": data_status != RETENTION_DELETED and global_enabled,
-        "history_visible": data_status != RETENTION_DELETED and global_enabled,
-        "global_enabled": global_enabled and data_status != RETENTION_DELETED,
+        "cross_project_profile": enabled_globally,
+        "collaboration_analysis": enabled_globally,
+        "history_visible": enabled_globally,
+        "global_enabled": enabled_globally,
         "data_status": data_status,
         "retention_mode": auth["retention_mode"],
         "updated_at": auth["updated_at"],
-        "project_overrides": {
-            str(row["project_id"]): bool(row["enabled"]) for row in overrides
-        },
+        "project_overrides": {str(row["project_id"]): bool(row["enabled"]) for row in overrides},
         "projects": project_items,
     }
 
@@ -153,7 +159,7 @@ def update_authorization(
     user_id: int,
     *,
     global_enabled: Optional[bool] = None,
-    project_overrides: Optional[Mapping[int, bool]] = None,
+    project_overrides: Optional[Mapping[int, Optional[bool]]] = None,
 ) -> dict[str, Any]:
     auth = _ensure_authorization(conn, user_id)
     overrides = project_overrides or {}
@@ -161,13 +167,14 @@ def update_authorization(
         return get_authorization(conn, user_id)
     for project_id in overrides:
         if not conn.execute(
-            "SELECT 1 FROM projects p JOIN memberships m ON m.project_id=p.id WHERE p.id=? AND m.user_id=? AND m.status IN ('active','left') AND p.deleted_at IS NULL",
+            """SELECT 1 FROM projects p JOIN memberships m ON m.project_id=p.id
+               WHERE p.id=? AND m.user_id=? AND m.status IN ('active','left') AND p.deleted_at IS NULL""",
             (int(project_id), user_id),
         ).fetchone():
             raise ValueError(f"项目 {project_id} 不是该用户的历史项目")
     stamp = now_iso()
     next_global = int(global_enabled) if global_enabled is not None else int(auth["global_enabled"])
-    should_restore = next_global == 1 or any(bool(value) for value in overrides.values())
+    should_restore = next_global == 1 or any(value is True for value in overrides.values())
     retention_mode = RETENTION_RETAINED if should_restore else auth["retention_mode"]
     if global_enabled is not None or should_restore:
         conn.execute(
@@ -175,19 +182,29 @@ def update_authorization(
             (next_global, retention_mode, stamp, user_id),
         )
     for project_id, enabled in overrides.items():
+        if enabled is None:
+            conn.execute(
+                "DELETE FROM profile_project_authorizations WHERE user_id=? AND project_id=?",
+                (user_id, int(project_id)),
+            )
+            continue
         conn.execute(
             """INSERT INTO profile_project_authorizations(user_id,project_id,enabled,updated_at)
                VALUES (?,?,?,?)
                ON CONFLICT(user_id,project_id) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at""",
-            (user_id, int(project_id), int(bool(enabled)), stamp),
+            (user_id, int(project_id), int(enabled), stamp),
         )
     return get_authorization(conn, user_id)
 
 
 def delete_derived_profile_data(conn, user_id: int) -> dict[str, Any]:
-    """删除持久化的画像派生/授权快照，不删除团队原始任务和贡献。"""
+    """删除画像授权/派生快照，不删除团队原始任务、贡献和工时记录。"""
     _ensure_authorization(conn, user_id)
     stamp = now_iso()
+    override_count = conn.execute(
+        "SELECT COUNT(*) n FROM profile_project_authorizations WHERE user_id=?",
+        (user_id,),
+    ).fetchone()["n"]
     conn.execute("DELETE FROM profile_project_authorizations WHERE user_id=?", (user_id,))
     conn.execute(
         """UPDATE profile_authorizations
@@ -198,9 +215,9 @@ def delete_derived_profile_data(conn, user_id: int) -> dict[str, Any]:
     payload = get_authorization(conn, user_id)
     payload.update(
         {
-            "deleted_derived_records": 0,
+            "deleted_derived_records": int(override_count or 0),
             "raw_team_records_preserved": True,
-            "message": "已停止画像使用并清除授权快照；团队任务、贡献等原始记录未删除。",
+            "message": "已停止画像使用并删除授权派生数据；团队任务、贡献和工时原始记录按项目权限保留。",
         }
     )
     return payload
@@ -209,6 +226,7 @@ def delete_derived_profile_data(conn, user_id: int) -> dict[str, Any]:
 __all__ = [
     "RETENTION_RETAINED",
     "RETENTION_DELETED",
+    "RETENTION_FROZEN",
     "delete_derived_profile_data",
     "get_authorization",
     "is_profile_enabled_for_project",

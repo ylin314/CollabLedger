@@ -425,7 +425,7 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
         hist_profile = None
         if quality_missing or efficiency_missing or quality_samples < 2 or efficiency_samples < 2:
             from backend.services.profile import build_profile_internal
-            hist_profile = build_profile_internal(conn, profile["id"], project_id)
+            hist_profile = build_profile_internal(conn, profile["id"], authorized_only=True)
         if hist_profile and (quality_missing or quality_samples < 2):
             avg_q = hist_profile.get("average_quality")
             if avg_q is not None and hist_profile.get("quality_samples"):

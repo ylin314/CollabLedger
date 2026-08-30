@@ -1,76 +1,116 @@
-# D6 长期画像 - 深化方案
+# D6 长期画像与跨项目协作 - 深化方案与完成记录
 
-> 面向开发会话（session / goal）的可执行方案文档。目标：把散落在任务、评价、打卡、贡献里的历史数据聚合为「成员长期画像」，并让 D1 推荐在没有当前项目样本时用画像兜底。不做评审人/导师观察者等复杂角色（B 领域）。
-> 状态：已与负责人确认决策（见「决策记录」）。执行顺序：D5 → D6 → D7，本文件第二个执行。
+> 适用日期：2026-08-30。执行顺序：D5 → D6 → D7。D6 已完成代码整改，浏览器、重启、PostgreSQL 和容器证据由 D7 收口。
 
-## 1. 现状对照
+## 1. 已确认产品决策
 
-### 1.1 文档要求（团队分工 3.12 长期画像、产品路线图阶段四）
-- 历史项目、画像、跨项目授权；README：画像页不要用假数据。
+| 决策项 | 结论 |
+|---|---|
+| 授权层级 | 全局开关 + 项目级覆盖，不做第三档用途级 UI |
+| 默认值 | 同团队跨项目分析默认启用 |
+| 关闭语义 | 默认冻结：停止使用但保留真实团队数据 |
+| 删除语义 | 可选彻底删除画像授权/派生数据；不级联删除同一真实项目的任务、贡献、工时 |
+| API 契约 | API 契约字段为对外标准；深化算法字段附加返回 |
+| 技能证据 | users.skills 只作自报技能/冷启动，不冒充历史完成证据 |
+| 贡献口径 | 只统计 confirmed；pending/disputed 不进入画像和活跃月份 |
+| 隐私边界 | 不读取 Agent 对话、桌面、聊天或设备数据；不输出人格/道德评价和公开排名 |
 
-### 1.2 当前实现
-| 能力 | 现状 |
-| --- | --- |
-| 推荐 | D1 仅在「当前项目」内打匹配度，候选=member，无历史数据时中性分 0.5 |
-| 成员资料 | users.skills（技能标签）、max_concurrent_tasks；memberships 记录项目与角色 |
-| 历史数据 | tasks（quality/actual_hours/estimated_hours/status）、task_reviews（quality/comment）、work_logs（工时）、contributions（confirmed）已落库 |
-| 画像 | 无任何聚合画像；无跨项目推荐；无「无样本」兜底 |
+## 2. 画像模型
 
-### 1.3 差距结论
-- 成员只有「当前项目数据」，缺少跨项目历史资产视图。
-- 新成员/新项目样本不足时，推荐无法利用其历史表现。
+### 2.1 来源范围
 
-## 2. 决策记录（已确认）
-| 项 | 决策 |
-| --- | --- |
-| 画像范围 | 技能画像 + 跨项目推荐；不做评审人/导师观察者 ✅ |
-| 数据来源 | 只用现有真实数据（tasks / task_reviews / work_logs / contributions），不引外部 ✅ |
-| 画像展示 | add 成员卡片/详情展示画像（雷达/条形），不造假数据；阶段四假画像页不提前做 ✅ |
-| 跨项目推荐 | 当前项目样本不足时用画像兜底（`profile_source` 标记）✅ |
-| 时间衰减 | 近期数据权重更高（近 90 天权重 1.0，更早按 0.5 衰减），避免陈旧画像 |
-| 画像刷新 | 读取时按需聚合（不建常驻表），数据变化即新画像；如需缓存列 backlog |
+- 本人查看：其 active/left membership 对应且未删除的项目。
+- 他人查看：双方必须仍在至少一个未删除项目中 active；聚合数据只来自目标用户当前授权的来源项目。
+- D1 项目内推荐：当前项目事实由 D1 原有链路读取；历史画像 fallback 只读取用户授权的来源项目。
 
-## 3. 深化设计
+### 2.2 对外字段
 
-### 3.1 画像维度（与 D1 四维对齐）
-对每个成员计算 `profile`：
-1. **技能画像**：从 `users.skills` + 历史任务 `task_type` 提取技能族（复用 D1 的 ONTO 技能族同义映射 `backend/services/recommend.py`）。
-   - `skill_families`：出现次数 ≥2 的技能族。
-   - `skill_strength`：按该技能族下任务完成率 × 平均质量加权。
-2. **质量画像**：`average_quality` = 加权均值（task_reviews.quality / tasks.quality），样本数 `quality_samples`。
-3. **效率画像**：`average_efficiency` = 历史任务 Σactual_hours ÷ Σestimated_hours（<1 表示比预估快，>1 慢）；样本 `efficiency_samples`。
-4. **历史贡献**：`contributions_total`（confirmed 计数）、`projects_count`（参与项目数）、`active_months`。
+`GET /api/users/me/profile` 与 `GET /api/users/{user_id}/profile` 返回：
 
-### 3.2 计算位置
-- 新增 `backend/services/profile.py`：`build_profile(user_id)` 纯函数聚合，不直接访问 Request。
-- 新增接口：
-  - `GET /api/users/{user_id}/profile` → `{user_id, name, skill_families, skill_strength, average_quality, quality_samples, average_efficiency, efficiency_samples, contributions_total, projects_count, active_months, updated_at}`。
-  - 鉴权：仅本人或同项目成员可查看（`ensure_project_access` 或 owner 全局）。
-- 推荐接入：`backend/services/recommend.py` 候选打分时，若当前项目样本不足（如 quality/efficiency 样本 <2），用 `build_profile` 的画像值替代中性分，并在响应 `recommendations[].profile_source` 标记 `historical`；否则 `current`。
+- 契约字段：`project_count`、`completed_task_count`、`average_quality`、`efficiency`、`on_time_rate`、`top_skills`、`collaboration_types`、`data_sources`、`generated_at`。
+- 附加计算字段：`projects_count`、`quality_samples`、`average_efficiency`、`efficiency_samples`、`on_time_samples`、`skill_families`、`skill_strength`、`contributions_total`、`active_months`、`declared_skills`、`source_projects`、`calculation_notes`、`updated_at`。
 
-### 3.3 前端
-- 成员卡片（Overview `MemberCard`）增加「画像」入口，点击弹出成员画像面板：
-  - 技能族 chips（带强度进度条）、质量 / 效率 / 历史项目 / 总贡献数值。
-  - 明确文案「基于历史项目聚合，仅本组成员可见」；无数据时显示「暂无历史画像」。
-- 推荐卡片若 `profile_source=profile`，在原因区标注「参考历史画像」。
+### 2.3 算法口径
 
-### 3.4 数据一致性
-- 画像只读聚合，不写缓存表 → 无过期问题、无脏数据。
-- 隐私：画像只含项目内协作事实（任务/评价/工时/贡献），不采集个人设备/聊天数据（对齐 AGENTS.md 隐私边界）。
+1. 技能强度：任务标题/类型命中技能族；完成率乘质量分。自报技能仅在 `declared_skills` 和冷启动推荐出现。
+2. 质量：任务 review/quality 加权均值，近 90 天权重 1.0、更早 0.5。
+3. 效率：已完成任务的衰减加权 `Σactual_hours / Σestimated_hours`；不与 work_logs 混加。
+4. 准时率：只统计设置截止日期的已完成任务，优先使用 complete task_log 时间。
+5. 贡献类型：只统计 confirmed 且未删除贡献，按 kind 返回 count/ratio。
+6. 活跃月份：任务、confirmed 贡献、work_logs 的月份去重。
 
-## 4. 测试
-- `backend/test/test_profile.py`（mock DB 种子）：
-  - build_profile 对无历史成员返回空画像（不抛错）
-  - 有 samples 时 average_quality / efficiency 计算正确；时间衰减生效
-  - 推荐样本不足时走 profile_source=profile，样本足时为 current
-  - 权限：他人 profile 非项目成员返回 403
-- 保持后端测试全绿 + 前端 build 通过。
+## 3. 授权与删除
 
-## 5. 验收标准
-- [ ] `GET /api/users/{id}/profile` 返回 8 个画像字段，数据与 tasks/reviews/work_logs/contributions 一致
-- [ ] 无历史数据成员显示空画像而非假数据
-- [ ] 推荐在样本不足时引用画像兜底，响应带 profile_source 标记
-- [ ] 前端成员卡片可打开画像详情，推荐卡片标注画像来源
-- [ ] `pytest backend/` 全绿（含新增 test_profile.py）
-- [ ] `cd frontend && npm run build` 通过
-- [ ] README 阶段四 TODO 更新：画像已实现，跨项目授权仍为未实现
+接口：
+
+- `GET/PATCH /api/users/me/authorizations`
+- `DELETE /api/users/me/profile-data`
+
+项目覆盖的值：
+
+- `true`：该项目允许。
+- `false`：该项目关闭。
+- `null`：删除覆盖，重新跟随全局。
+
+关闭全局且没有允许覆盖时为 `frozen`；删除后为 `deleted`。任一项目重新允许或全局重新启用时恢复 `retained`。授权读取不隐式写库，写入只发生在用户明确 PATCH/DELETE 时。
+
+## 4. 跨项目合作关系
+
+`GET /api/users/me/collaborations` 只统计：
+
+- 双方均曾参与（active/left）的同一未删除项目；
+- 双方都允许该项目用于分析；
+- 共同任务要求双方均为负责人或任务参与者。
+
+合作分：
+
+$$
+score = \min(100, 30 \times shared\_project\_count + 5 \times \min(shared\_task\_count, 10))
+$$
+
+响应返回来源项目与公式，不生成“可靠、勤奋、拖延”等推测性标签。
+
+## 5. 长期任务方向
+
+`GET /api/users/me/recommendations`：
+
+- 有授权历史任务时，从真实技能强度、质量和效率生成方向，返回 `sample_count/data_sources/source_project_ids`。
+- 无历史时，仅从自报技能生成固定 50 分冷启动项，`cold_start=true`、`sample_count=0`。
+- frozen/deleted 返回空数组和明确说明。
+
+该接口是个人方向建议，不修改项目任务、负责人、评审人或导师。
+
+## 6. 前端
+
+独立侧栏入口“我的长期画像”，提供：
+
+- 契约指标、算法字段、数据来源与计算口径；
+- 全局开关和逐项目覆盖；
+- 冻结说明与彻底删除二次确认；
+- 双边授权合作关系；
+- 历史/冷启动长期方向；
+- 无数据诚实空态。
+
+成员卡片仍可查看同项目成员画像；退出项目后后端返回 403。390px CSS 已提供单列布局，真实浏览器行为留 D7。
+
+## 7. 实现位置
+
+- 聚合：`backend/services/profile.py`
+- 授权：`backend/services/profile_authorization.py`
+- 合作/方向：`backend/services/collaboration_profile.py`
+- 路由：`backend/routers/auth_users.py`
+- 前端：`frontend/src/features/profile/ProfileModal.jsx`、`frontend/src/App.jsx`
+- 测试：`backend/test/test_profile.py`、`backend/test/test_d1_authorization.py`、`backend/test/test_d6_collaboration.py`、`frontend/src/features/profile/ProfileModal.test.tsx`
+
+## 8. 验收状态
+
+- [x] API 契约字段与深化字段兼容。
+- [x] confirmed / pending / disputed 口径正确。
+- [x] 自报技能不冒充历史完成证据。
+- [x] 全局开关、项目覆盖、冻结和删除。
+- [x] 双边授权合作关系。
+- [x] 历史方向与诚实冷启动。
+- [x] 退出项目后他人画像 403。
+- [x] 后端 D6/D1/profile 专项与全量测试通过。
+- [x] 前端组件测试、typecheck、build 通过。
+- [ ] D7：SQLite 重启、旧库、PostgreSQL、Docker、桌面/390px 浏览器验收。

@@ -79,15 +79,16 @@
 
 ## D6 长期画像与跨项目协作
 
-- [x] D1 已落地最小授权表和后端 API；D6 仍需完成完整产品化 UI、用途说明和审计证据。
-- [ ] profile 聚合只读取授权范围的真实 tasks/reviews/work_logs/confirmed contributions。
-- [ ] 统一 active/left/deleted membership 与历史项目口径；说明时间衰减计算。
-- [ ] 补 profile API 兼容字段、data_sources、计算逻辑和来源明细。
-- [ ] 实现跨项目合作关系 API/UI，过滤未授权项目。
-- [ ] 实现长期任务推荐 API/UI和冷启动规则。
-- [ ] 前端增加授权设置、画像来源、合作关系、长期推荐；无数据不造假。
-- [ ] 验证本人/同项目/离开项目/跨项目未授权/撤销授权/重启持久化/390px。
-
+- [x] profile 聚合只读取真实 tasks/reviews/work_logs/confirmed contributions；pending/disputed 不进入贡献和活跃月份。
+- [x] 统一 active/left/deleted membership 与历史项目口径；返回来源项目并说明时间衰减。
+- [x] 补齐 API 契约字段，同时附加深化字段、data_sources、计算逻辑和来源明细。
+- [x] 自报 skills 仅作冷启动，历史技能强度只由真实任务证据计算。
+- [x] 全局开关 + 项目覆盖；默认启用，关闭冻结保留，项目覆盖支持恢复跟随全局。
+- [x] 实现双方授权的跨项目合作关系 API/UI；撤销授权立即移除。
+- [x] 实现长期任务方向 API/UI、真实样本解释和诚实冷启动规则。
+- [x] 前端增加独立个人入口、授权设置、画像来源、合作关系、长期推荐、删除二次确认；无数据不造假。
+- [x] 自动化验证本人/同项目/离开项目/双边授权/撤销授权和 D1 推荐回归。
+- [ ] D7：SQLite 重启持久化、旧库兼容、PostgreSQL、桌面/390px 浏览器行为。
 ## D7 质量部署与演示
 
 - [ ] 补 Playwright E2E：注册/登录/邀请/任务/打卡/评价/贡献/推荐/周报/Agent/画像。

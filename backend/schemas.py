@@ -50,7 +50,7 @@ class ProfileAuthorizationUpdate(BaseModel):
     collaboration_analysis: Optional[bool] = None
     history_visible: Optional[bool] = None
     global_enabled: Optional[bool] = None
-    project_overrides: dict[int, bool] = Field(default_factory=dict)
+    project_overrides: dict[int, Optional[bool]] = Field(default_factory=dict)
 
 
 class MentorIn(BaseModel):

@@ -14,6 +14,7 @@ import {
   Sparkles,
   TimerReset,
   Users,
+  UserRound,
   History,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -48,6 +49,7 @@ import { ProjectSettingsView } from "./features/projects/ProjectSettingsView";
 import { InviteAcceptView } from "./features/invitations/InviteAcceptView";
 import { HistoryProjectsView } from "./features/projects/HistoryProjectsView";
 import { ClassroomsView } from "./features/classrooms/ClassroomsView";
+import { ProfileModal } from "./features/profile/ProfileModal";
 import { projectListQuery, workspaceQuery } from "./app/queries";
 import { taskPermissions } from "./app/permissions";
 
@@ -82,6 +84,7 @@ function App() {
   const [online, setOnline] = useState(Boolean(auth));
   const [showTask, setShowTask] = useState(false);
   const [recommendTask, setRecommendTask] = useState(null);
+  const [showMyProfile, setShowMyProfile] = useState(false);
 
   const [reviewTask, setReviewTask] = useState(null);
   const [toast, setToast] = useState("");
@@ -481,6 +484,9 @@ function App() {
               <TimerReset aria-hidden="true" /> 今日打卡
             </button>
           )}
+          <button className="side-tool" onClick={() => setShowMyProfile(true)}>
+            <UserRound aria-hidden="true" /> 我的长期画像
+          </button>
           <button className="side-tool" onClick={() => navigate("new")}>
             <Plus aria-hidden="true" /> 新建项目
           </button>
@@ -719,6 +725,9 @@ function App() {
           }}
         />
       )}{" "}
+      {showMyProfile && (
+        <ProfileModal user={auth} isSelf onClose={() => setShowMyProfile(false)} />
+      )}
       {toast && <div className="toast"><BookOpenCheck aria-hidden="true" /> {toast}</div>}
     </div>
   );

@@ -16,6 +16,7 @@ from backend.core.context import *
 from backend.schemas import *
 from backend.services.profile import build_profile_internal, profile_payload
 from backend.services.profile_authorization import delete_derived_profile_data, get_authorization, update_authorization
+from backend.services.collaboration_profile import build_collaborations, build_long_term_recommendations
 
 router = APIRouter()
 
@@ -185,6 +186,23 @@ def get_my_profile(request: Request) -> dict[str, Any]:
     return profile_payload(profile)
 
 
+@router.get("/api/users/me/collaborations")
+def get_my_collaborations(request: Request) -> dict[str, Any]:
+    conn = db()
+    current = require_user(conn, request)
+    payload = build_collaborations(conn, current["id"])
+    conn.close()
+    return payload
+
+
+@router.get("/api/users/me/recommendations")
+def get_my_long_term_recommendations(request: Request) -> dict[str, Any]:
+    conn = db()
+    current = require_user(conn, request)
+    payload = build_long_term_recommendations(conn, current["id"])
+    conn.close()
+    return payload
+
 @router.get("/api/users/{user_id}/profile")
 def get_user_profile(user_id: int, request: Request) -> dict[str, Any]:
     conn = db()
@@ -198,7 +216,9 @@ def get_user_profile(user_id: int, request: Request) -> dict[str, Any]:
         conn.close()
         return profile_payload(profile)
     same_project = conn.execute(
-        """SELECT a.project_id FROM memberships a JOIN memberships b ON a.project_id=b.project_id
+        """SELECT a.project_id FROM memberships a
+           JOIN memberships b ON a.project_id=b.project_id
+           JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL
            WHERE a.user_id=? AND b.user_id=? AND a.status='active' AND b.status='active'
            ORDER BY a.project_id LIMIT 1""",
         (current["id"], target["id"]),
@@ -206,7 +226,7 @@ def get_user_profile(user_id: int, request: Request) -> dict[str, Any]:
     if same_project is None:
         conn.close()
         fail(403, "FORBIDDEN", "无权查看该成员画像")
-    profile = build_profile_internal(conn, target["id"], int(same_project["project_id"]))
+    profile = build_profile_internal(conn, target["id"], authorized_only=True)
     conn.close()
     return profile_payload(profile)
 
