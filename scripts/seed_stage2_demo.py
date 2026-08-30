@@ -104,6 +104,6 @@ def seed(path: Path, password: str = "password-123") -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--db", default=str(ROOT / "stage2-demo.db"))
+    parser.add_argument("--db", default=str(ROOT / "collab.db"))
     args = parser.parse_args()
     seed(Path(args.db))

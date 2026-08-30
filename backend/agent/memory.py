@@ -36,12 +36,46 @@ class AgentMemory:
 
     def append(self, project_id: int, role: str, content: str, session_id: str = "default") -> None:
         conn = self._connect()
+        stamp = now_iso()
+        # agent_memory 是兼容旧数据的宽松记忆表；单元测试和内部调用可能没有
+        # 对应的 projects 行，因此仅在真实项目存在时维护会话元数据。
+        project_exists = conn.execute(
+            "SELECT 1 FROM projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if project_exists:
+            session = conn.execute(
+                "SELECT id FROM agent_sessions WHERE project_id=? AND session_key=?",
+                (project_id, session_id),
+            ).fetchone()
+            if session:
+                conn.execute(
+                    "UPDATE agent_sessions SET updated_at=? WHERE id=?",
+                    (stamp, session["id"]),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO agent_sessions(project_id,session_key,title,created_at,updated_at) VALUES (?,?,?,?,?)",
+                    (project_id, session_id, None, stamp, stamp),
+                )
         conn.execute(
             "INSERT INTO agent_memory(project_id,session_id,role,content,created_at) VALUES (?,?,?,?,?)",
-            (project_id, session_id, role, content[:12000], now_iso()),
+            (project_id, session_id, role, content[:12000], stamp),
         )
         conn.commit()
         conn.close()
+
+    def history(self, project_id: int, session_id: str = "default", limit: int = 30) -> list[dict[str, Any]]:
+        """返回当前会话的完整可展示历史（摘要也保留）。"""
+        limit = max(1, min(limit, 100))
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT role, content, created_at FROM agent_memory "
+            "WHERE project_id=? AND session_id=? ORDER BY id ASC LIMIT ?",
+            (project_id, session_id, limit),
+        ).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
 
     def recent(self, project_id: int, session_id: str = "default", limit: int = 8) -> list[dict[str, Any]]:
         """返回最近非摘要消息；若存在摘要则前插一条 role=summary 的压缩上下文。"""
@@ -119,5 +153,6 @@ class AgentMemory:
     def clear(self, project_id: int, session_id: str = "default") -> None:
         conn = self._connect()
         conn.execute("DELETE FROM agent_memory WHERE project_id=? AND session_id=?", (project_id, session_id))
+        conn.execute("DELETE FROM agent_sessions WHERE project_id=? AND session_key=?", (project_id, session_id))
         conn.commit()
         conn.close()

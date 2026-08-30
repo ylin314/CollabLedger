@@ -378,6 +378,56 @@ def test_health_and_agent_config_auth_and_sessions_empty(tmp_path, monkeypatch):
     assert owner.get(f"/api/projects/{pid}/agent/sessions").json() == {"items": []}
 
 
+def test_agent_session_history_can_be_loaded(tmp_path, monkeypatch):
+    """Agent 会话消息写入后可通过会话列表和历史接口恢复。"""
+    _setup(tmp_path, monkeypatch)
+    owner = _client()
+    _register_login(owner, "组长", "agent-history-owner@example.com")
+    pid = _project(owner, "Agent历史项目")
+
+    chat = owner.post(
+        f"/api/projects/{pid}/agent/chat",
+        json={"message": "目前项目最大的风险是什么？", "session_id": "session-history"},
+    )
+    assert chat.status_code == 200, chat.text
+
+    sessions = owner.get(f"/api/projects/{pid}/agent/sessions")
+    assert sessions.status_code == 200
+    item = next(row for row in sessions.json()["items"] if row["session_id"] == "session-history")
+    assert item["message_count"] == 2
+
+    history = owner.get(f"/api/projects/{pid}/agent/sessions/session-history/messages")
+    assert history.status_code == 200
+    assert [row["role"] for row in history.json()["items"]] == ["user", "assistant"]
+    assert history.json()["items"][0]["content"] == "目前项目最大的风险是什么？"
+
+
+def test_agent_session_can_be_renamed(tmp_path, monkeypatch):
+    """Agent 会话标题可持久化，并在会话列表中返回。"""
+    _setup(tmp_path, monkeypatch)
+    owner = _client()
+    _register_login(owner, "组长", "agent-rename-owner@example.com")
+    pid = _project(owner, "Agent重命名项目")
+
+    renamed = owner.patch(
+        f"/api/projects/{pid}/agent/sessions/session-renamed",
+        json={"title": "风险分析"},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["title"] == "风险分析"
+
+    sessions = owner.get(f"/api/projects/{pid}/agent/sessions")
+    item = next(row for row in sessions.json()["items"] if row["session_id"] == "session-renamed")
+    assert item["title"] == "风险分析"
+    assert item["message_count"] == 0
+
+    invalid = owner.patch(
+        f"/api/projects/{pid}/agent/sessions/session-renamed",
+        json={"title": "   "},
+    )
+    assert invalid.status_code == 422
+
+
 def test_project_acl_get_and_keyword_filter(tmp_path, monkeypatch):
     """项目单查：member 200、outsider 403；列表 keyword 精确过滤。"""
     _setup(tmp_path, monkeypatch)

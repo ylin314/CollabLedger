@@ -107,7 +107,7 @@
 ## 6. 本地验证命令
 ```powershell
 python scripts/seed_stage2_demo.py
-$env:COLLAB_DB = "$PWD\stage2-demo.db"
+$env:COLLAB_DB = "$PWD\collab.db"
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 # 负载(含 weighted_load 字段)
