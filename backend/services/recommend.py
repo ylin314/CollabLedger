@@ -425,7 +425,7 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
         hist_profile = None
         if quality_missing or efficiency_missing or quality_samples < 2 or efficiency_samples < 2:
             from backend.services.profile import build_profile_internal
-            hist_profile = build_profile_internal(conn, profile["id"])
+            hist_profile = build_profile_internal(conn, profile["id"], project_id)
         if hist_profile and (quality_missing or quality_samples < 2):
             avg_q = hist_profile.get("average_quality")
             if avg_q is not None and hist_profile.get("quality_samples"):
@@ -683,41 +683,76 @@ def list_recommendation_history(project_id: int, task_id: Optional[int] = None, 
 
 
 def decide_recommendation(project_id: int, rec_id: int, actor_id: Optional[int], user_id: int, note: Optional[str], request) -> dict[str, Any]:
+    """在单个事务内完成推荐状态、任务指派、参与者和事件写入。"""
     conn = db()
-    row = conn.execute("SELECT * FROM recommendations WHERE id=? AND project_id=?", (rec_id, project_id)).fetchone()
-    if not row:
+    try:
+        project = ensure_project(conn, project_id)
+        ensure_writable(project)
+        row = conn.execute(
+            "SELECT * FROM recommendations WHERE id=? AND project_id=?",
+            (rec_id, project_id),
+        ).fetchone()
+        if not row:
+            fail(404, "NOT_FOUND", "推荐记录不存在")
+        payload = json.loads(row["payload"] or "{}")
+        task_id = row["task_id"] or (payload.get("task") or {}).get("task_id")
+        if not task_id:
+            fail(409, "CONFLICT", "这条推荐还没有关联任务，无法直接指派")
+        status = row["status"] if "status" in row.keys() else "generated"
+        if status != "generated":
+            fail(409, "CONFLICT", "这条推荐已经完成指派")
+        recommended_ids = {int(item["user_id"]) for item in payload.get("recommendations") or []}
+        action = "accept" if user_id in recommended_ids else "manual"
+        ensure_member(conn, project_id, user_id)
+        stamp = now_iso()
+        changed = conn.execute(
+            """UPDATE recommendations
+               SET status=?,accepted_user_id=?,accepted_at=?,assigned_user_id=?,assigned_at=?
+               WHERE id=? AND project_id=? AND status='generated'""",
+            (action, user_id, stamp, user_id, stamp, rec_id, project_id),
+        )
+        if changed.rowcount != 1:
+            fail(409, "CONFLICT", "这条推荐已经完成指派")
+
+        # 任务更新复用同一连接，任何后续失败都会回滚上面的条件更新。
+        from backend.routers.tasks import assign_task_in_connection
+
+        task = assign_task_in_connection(
+            conn,
+            int(task_id),
+            user_id,
+            actor_id,
+            note or ("采纳推荐" if action == "accept" else "手工指定负责人"),
+        )
+        conn.execute(
+            """INSERT INTO recommendation_events(
+                recommendation_id,project_id,task_id,actor_id,action,selected_user_id,note,payload,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                rec_id,
+                project_id,
+                int(task_id),
+                actor_id,
+                action,
+                user_id,
+                note,
+                json.dumps({"recommended_ids": sorted(recommended_ids), "changed": action == "manual"}, ensure_ascii=False),
+                stamp,
+            ),
+        )
+        conn.commit()
+        return {
+            "recommendation_id": rec_id,
+            "action": action,
+            "changed": action == "manual",
+            "task": task,
+            "disclaimer": RECOMMEND_DISCLAIMER,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         conn.close()
-        fail(404, "NOT_FOUND", "推荐记录不存在")
-    payload = json.loads(row["payload"] or "{}")
-    task_id = row["task_id"] or (payload.get("task") or {}).get("task_id")
-    if not task_id:
-        conn.close()
-        fail(409, "CONFLICT", "这条推荐还没有关联任务，无法直接指派")
-    keys = row.keys()
-    status = row["status"] if "status" in keys else "generated"
-    if status in {"accept", "accepted", "assigned", "manual"}:
-        conn.close()
-        fail(409, "CONFLICT", "这条推荐已经完成指派")
-    recommended_ids = {int(item["user_id"]) for item in payload.get("recommendations") or []}
-    action = "accept" if user_id in recommended_ids else "manual"
-    conn.close()
-    from backend.routers.tasks import assign_task
-    from backend.schemas import AssignIn
-    task = assign_task(int(task_id), AssignIn(assignee_id=user_id, note=note or ("采纳推荐" if action == "accept" else "手工指定负责人")), request)
-    stamp = now_iso()
-    conn = db()
-    conn.execute(
-        "UPDATE recommendations SET status=?, accepted_user_id=?, accepted_at=?, assigned_user_id=?, assigned_at=? WHERE id=?",
-        (action if action == "accept" else "manual", user_id, stamp, user_id, stamp, rec_id),
-    )
-    conn.execute(
-        """INSERT INTO recommendation_events(recommendation_id,project_id,task_id,actor_id,action,selected_user_id,note,payload,created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        (rec_id, project_id, int(task_id), actor_id, action, user_id, note, json.dumps({"recommended_ids": sorted(recommended_ids), "changed": action == "manual"}, ensure_ascii=False), stamp),
-    )
-    conn.commit()
-    conn.close()
-    return {"recommendation_id": rec_id, "action": action, "changed": action == "manual", "task": task, "disclaimer": RECOMMEND_DISCLAIMER}
 
 
 __all__ = [

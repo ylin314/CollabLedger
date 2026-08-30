@@ -247,6 +247,17 @@ weekly_reports = table("weekly_reports",
     Column("created_at", String(40), nullable=False), Column("updated_at", String(40)),
     UniqueConstraint("project_id", "period_start", "period_end", name="uq_weekly_reports_project_period"))
 
+profile_authorizations = table("profile_authorizations",
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("global_enabled", Integer, nullable=False, server_default=text("1")),
+    Column("retention_mode", String(20), nullable=False, server_default=text("'retained'")),
+    Column("deleted_at", String(40)), Column("updated_at", String(40), nullable=False))
+
+profile_project_authorizations = table("profile_project_authorizations",
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("project_id", ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    Column("enabled", Integer, nullable=False), Column("updated_at", String(40), nullable=False))
+
 
 Index("idx_users_email", User.email)
 Index("idx_memberships_user", Membership.user_id, Membership.project_id)

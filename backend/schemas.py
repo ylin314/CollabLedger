@@ -43,6 +43,16 @@ class UserUpdate(BaseModel):
     status: Optional[Literal["online", "offline", "busy"]] = None
 
 
+class ProfileAuthorizationUpdate(BaseModel):
+    """兼容契约三字段，并附加全局开关和项目级白名单。"""
+
+    cross_project_profile: Optional[bool] = None
+    collaboration_analysis: Optional[bool] = None
+    history_visible: Optional[bool] = None
+    global_enabled: Optional[bool] = None
+    project_overrides: dict[int, bool] = Field(default_factory=dict)
+
+
 class MentorIn(BaseModel):
     email: str = Field(min_length=3, max_length=254)
 

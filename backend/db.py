@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.models import Base
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = r'''
 CREATE TABLE IF NOT EXISTS users (
@@ -212,6 +212,17 @@ CREATE TABLE IF NOT EXISTS weekly_reports (
  UNIQUE(project_id, period_start, period_end),
  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS profile_authorizations (
+ user_id INTEGER PRIMARY KEY, global_enabled INTEGER NOT NULL DEFAULT 1,
+ retention_mode TEXT NOT NULL DEFAULT 'retained', deleted_at TEXT, updated_at TEXT NOT NULL,
+ FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS profile_project_authorizations (
+ user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, enabled INTEGER NOT NULL, updated_at TEXT NOT NULL,
+ PRIMARY KEY(user_id,project_id),
+ FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+ FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 '''
 
