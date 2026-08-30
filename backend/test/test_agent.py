@@ -170,3 +170,48 @@ def test_agent_llm_invalid_json_falls_back(tmp_path, monkeypatch):
     result = runtime.run(1, "帮我看看")
     assert result["source"] == "fallback"
     assert result["answer"]
+
+
+def test_agent_conversation_isolated_by_user_and_weekly_tool_is_read_only(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.agent.memory import AgentMemory
+    from backend.agent.tools import AgentTools
+
+    db_path = tmp_path / "agent-isolation.db"
+    monkeypatch.setattr(api, "DB_PATH", db_path)
+    monkeypatch.setenv("LLM_API_KEY", "")
+    api.init_db()
+    owner_client = TestClient(api.app, base_url="https://testserver")
+    member_client = TestClient(api.app, base_url="https://testserver")
+    for client, name, email in ((owner_client, "对话组长", "agent-owner@example.com"), (member_client, "对话成员", "agent-member@example.com")):
+        assert client.post("/api/auth/register", json={"name": name, "email": email, "password": "password-123"}).status_code == 201
+        assert client.post("/api/auth/login", json={"email": email, "password": "password-123"}).status_code == 200
+    member_id = member_client.get("/api/auth/me").json()["id"]
+    pid = owner_client.post("/api/projects", json={"name": "Agent 隔离项目"}).json()["id"]
+    code = owner_client.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
+    assert member_client.post(f"/api/invitations/{code}/accept").status_code == 200
+    monkeypatch.setattr(api, "get_agent_runtime", lambda: AgentRuntime(db_path, AgentConfig(base_url="", api_key="", model="test")))
+
+    chat = owner_client.post(f"/api/projects/{pid}/agent/chat", json={"message": "请查看项目风险", "session_id": "private"})
+    assert chat.status_code == 200
+    assert owner_client.get(f"/api/projects/{pid}/agent/sessions").json()["items"][0]["session_id"] == "private"
+    assert member_client.get(f"/api/projects/{pid}/agent/sessions").json()["items"] == []
+    member_chat = member_client.post(f"/api/projects/{pid}/agent/chat", json={"message": "请查看项目风险", "session_id": "private"})
+    assert member_chat.status_code == 200
+    assert member_chat.json()["memory"][-1]["role"] == "assistant"
+    assert all("对话组长" not in item.get("content", "") for item in member_chat.json()["memory"])
+    owner_sessions = owner_client.get(f"/api/projects/{pid}/agent/sessions").json()["items"]
+    assert len(owner_sessions) == 1 and owner_sessions[0]["message_count"] >= 2
+
+    tools = AgentTools()
+    preview = tools.weekly_report(pid)
+    assert preview["exists"] is False
+    conn = api.db()
+    assert conn.execute("SELECT COUNT(*) n FROM weekly_reports WHERE project_id=?", (pid,)).fetchone()["n"] == 0
+    conn.close()
+
+    memory = AgentMemory(tmp_path / "memory-users.db")
+    memory.append(1, "user", "用户一", user_id=1)
+    memory.append(1, "user", "用户二", user_id=2)
+    assert [item["content"] for item in memory.recent(1, user_id=1)] == ["用户一"]
+    assert [item["content"] for item in memory.recent(1, user_id=2)] == ["用户二"]

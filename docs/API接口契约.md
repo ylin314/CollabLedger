@@ -1584,6 +1584,7 @@ POST /api/projects/{project_id}/agent/chat
   "answer": "当前项目最大的风险是任务「完成后端鉴权模块」已经延期，建议优先处理。",
   "source": "llm",
   "llm_error": null,
+  "memory_warning": null,
   "plan": [
     { "tool": "snapshot", "purpose": "读取任务、成员、风险和贡献事实" }
   ],
@@ -1621,11 +1622,13 @@ POST /api/projects/{project_id}/agent/chat
 - `tool_trace`：实际执行过的工具轨迹，含工具名、参数与成功/失败状态，供前端展示推理过程。
 - `citations`：从工具结果中提取的来源引用（任务 / 风险 / 成员 / 周报），可追溯到具体事实。
 - `facts`：本轮收集到的项目事实快照（脱敏，不含 API Key）。
-- `memory`：当前会话记忆（超过阈值后自动压缩为 `role=summary` 摘要，前插返回）。
+- `memory`：当前用户的会话记忆（超过阈值后自动压缩为 `role=summary` 摘要，前插返回）。
+- `memory_warning`：摘要压缩失败时的脱敏诊断信息；失败不会删除原消息。
+
 
 Agent 行为规则：
 
-- Agent 只能读取当前用户有权访问的项目，且只能调用白名单只读工具（`snapshot` / `recommend` / `task_detail` / `risk_detail` / `weekly_report` / `member_load`），不会出现未知工具调用。
+- Agent 只能读取当前用户有权访问的项目，且只能调用白名单只读工具（`snapshot` / `recommend` / `task_detail` / `risk_detail` / `weekly_report` / `member_load`），不会出现未知工具调用；`weekly_report` 只读已落库周报，不生成周报。
 - 回答必须基于项目事实（LLM 只能依据注入的 `facts` / `tool_trace`），不输出成员排名、人格评价或负面标签。
 - LLM 采用多步推理循环（ReAct 简化版），`AGENT_MAX_STEPS`（默认 4）控制最大轮数，超限或失败时自动规则兜底。
 - 长对话自动摘要压缩：`AGENT_SUMMARY_THRESHOLD`（默认 8）与 `AGENT_SUMMARY_LIMIT`（默认 8）控制，摘要失败时保留原消息不丢上下文。
@@ -1640,7 +1643,7 @@ GET /api/projects/{project_id}/agent/sessions
 
 成功响应：`200 OK`
 
-返回会话列表，包含 `session_id`、`last_message`、`message_count`、`updated_at`。
+返回当前用户自己的会话列表，包含 `session_id`、`last_message`、`message_count`、`updated_at`；同项目其他成员不可读取这些对话记录。
 
 ### 9.9 清空 Agent 会话
 

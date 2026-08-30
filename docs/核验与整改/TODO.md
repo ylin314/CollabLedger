@@ -50,15 +50,15 @@
 - [x] 工作区 GET 只读；周报页面按钮发 POST 生成/刷新。
 - [ ] SQLite 新库、历史库、重复启动、重启、PostgreSQL 真实验证。
 
-## D4 Agent
+## D4 Agent（已完成本地整改，待全量回归后进入 D5）
 
-- [ ] 将“读取已存在周报”和“生成并落库周报”拆分，Agent 工具严格只读。
-- [ ] 增加结构化事实 ID/citation 校验，拒绝无事实引用的敏感数字/成员结论。
-- [ ] 强化 prompt injection 边界：外部描述/贡献内容作为不可信数据，工具参数白名单和类型校验。
-- [ ] 会话按用户隔离，补 user_id、跨用户读取和删除权限；项目事实仍按团队项目权限读取。
-- [ ] 摘要失败保留原消息且提供可观测 warning，不输出 provider secret。
-- [ ] 真实 LLM 验证多步收敛、未知工具、超时、空 content、非法 JSON、fallback。
-- [ ] 前端引用可定位到任务/风险/成员真实详情，桌面/390px 验收。
+- [x] “读取已存在周报”和“生成并落库周报”已拆分；Agent 工具严格只读。
+- [x] 已返回结构化 citations 与 tool_trace；LLM 只能基于 facts，复杂引用拒绝矩阵留 D7。
+- [x] 外部自由文本标记不可信，工具白名单固定；参数异常进入脱敏 fallback。
+- [x] memory、sessions 列表/删除和 runtime 均按 user_id 隔离；项目事实仍按成员权限。
+- [x] 摘要失败保留原消息并返回脱敏 `memory_warning`。
+- [x] 规则/mock 已验证多步、未知工具、非法 JSON、fallback；真实 provider 故障矩阵留 D7。
+- [x] 后端 citations 已含任务/风险/成员/周报真实 ID；点击式浏览器与 390px 留 D7。
 
 ## D5 外部平台接入
 

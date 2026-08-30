@@ -38,8 +38,8 @@ def agent_config(request: Request) -> dict[str, Any]:
 
 @router.post("/api/projects/{project_id}/agent/chat")
 def project_agent_chat(project_id: int, payload: AgentIn, request: Request) -> dict[str, Any]:
-    conn = db(); ensure_project_access(conn, project_id, request, "member"); conn.close()
-    result = get_agent_runtime().run(project_id, payload.message, payload.session_id)
+    conn = db(); _, user, _ = ensure_project_access(conn, project_id, request, "member"); conn.close()
+    result = get_agent_runtime().run(project_id, payload.message, payload.session_id, user_id=user["id"] if user else None)
     facts = result.get("facts") or {}
     facts.setdefault("project_id", project_id)
     facts.setdefault("risk_count", (facts.get("risks") or {}).get("count", 0))
@@ -49,19 +49,20 @@ def project_agent_chat(project_id: int, payload: AgentIn, request: Request) -> d
 
 @router.get("/api/projects/{project_id}/agent/sessions")
 def agent_sessions(project_id: int, request: Request) -> dict[str, Any]:
-    conn = db(); ensure_project_access(conn, project_id, request)
-    # AgentMemory 会在首次调用时建表；尚未调用时返回空列表。
+    conn = db(); _, user, _ = ensure_project_access(conn, project_id, request)
+    # 对话属于当前用户；项目事实仍按项目成员权限读取。
     exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory'").fetchone()
     if not exists: conn.close(); return {"items": []}
     rows = conn.execute("""SELECT session_id,COUNT(*) message_count,MAX(created_at) updated_at,
-        (SELECT content FROM agent_memory a2 WHERE a2.project_id=a.project_id AND a2.session_id=a.session_id ORDER BY id DESC LIMIT 1) last_message
-        FROM agent_memory a WHERE project_id=? GROUP BY session_id ORDER BY updated_at DESC""", (project_id,)).fetchall(); conn.close(); return {"items": [dict(row) for row in rows]}
+        (SELECT content FROM agent_memory a2 WHERE a2.project_id=a.project_id AND a2.session_id=a.session_id AND a2.user_id=a.user_id ORDER BY id DESC LIMIT 1) last_message
+        FROM agent_memory a WHERE project_id=? AND user_id=? GROUP BY session_id,user_id ORDER BY updated_at DESC""", (project_id, user["id"])).fetchall(); conn.close(); return {"items": [dict(row) for row in rows]}
 
 
 @router.delete("/api/projects/{project_id}/agent/sessions/{session_id}", status_code=204)
 def clear_agent_session(project_id: int, session_id: str, request: Request) -> Response:
-    conn = db(); ensure_project_access(conn, project_id, request, "owner")
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory'").fetchone(): conn.execute("DELETE FROM agent_memory WHERE project_id=? AND session_id=?", (project_id, session_id)); conn.commit()
+    conn = db(); _, user, _ = ensure_project_access(conn, project_id, request, "owner")
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory'").fetchone():
+        conn.execute("DELETE FROM agent_memory WHERE project_id=? AND session_id=? AND user_id=?", (project_id, session_id, user["id"])); conn.commit()
     conn.close(); return Response(status_code=204)
 
 
