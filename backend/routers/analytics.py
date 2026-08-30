@@ -76,15 +76,33 @@ def contribution_report(project_id: int, request: Request) -> dict[str, Any]:
 def weekly_report(
     project_id: int, request: Request, week_start: Optional[date] = None,
     start_date: Optional[date] = None, end_date: Optional[date] = None,
-    refresh: bool = False, format: Literal["json", "markdown"] = "json",
+    format: Literal["json", "markdown"] = "json",
 ) -> Any:
-    conn = db(); _, user, _ = ensure_project_access(conn, project_id, request); conn.close()
-    actor_id = user["id"] if user is not None else None
+    """只读返回已存在周报；打开工作区、Agent 查询均不会触发写入。"""
+    conn = db(); ensure_project_access(conn, project_id, request); conn.close()
     if week_start is None and (start_date is not None or end_date is not None):
-        start, _ = _week_bounds(start_date, end_date)  # 兼容旧参数，统一按周一归一化
+        start, _ = _week_bounds(start_date, end_date)
         week_start = start
-    data = get_weekly_report(project_id, week_start=week_start, refresh=refresh, actor_id=actor_id)
-    if format == "markdown": return PlainTextResponse(_weekly_markdown(data), media_type="text/markdown; charset=utf-8")
+    data = get_weekly_report(project_id, week_start=week_start)
+    if format == "markdown":
+        return PlainTextResponse(_weekly_markdown(data), media_type="text/markdown; charset=utf-8")
+    return data
+
+
+@router.post("/api/projects/{project_id}/weekly-report")
+def generate_weekly_report_route(
+    project_id: int, request: Request, week_start: Optional[date] = None,
+    start_date: Optional[date] = None, end_date: Optional[date] = None,
+    format: Literal["json", "markdown"] = "json",
+) -> Any:
+    """周报页面明确点击生成/刷新后调用的写接口。"""
+    conn = db(); _, user, _ = ensure_project_access(conn, project_id, request, "member"); conn.close()
+    if week_start is None and (start_date is not None or end_date is not None):
+        start, _ = _week_bounds(start_date, end_date)
+        week_start = start
+    data = generate_weekly_report(project_id, week_start=week_start, actor_id=user["id"] if user else None)
+    if format == "markdown":
+        return PlainTextResponse(_weekly_markdown(data), media_type="text/markdown; charset=utf-8")
     return data
 
 
@@ -96,9 +114,10 @@ def weekly_report_history(project_id: int, request: Request, limit: int = Query(
 
 @router.get("/api/projects/{project_id}/report/export")
 def export_report(project_id: int, request: Request, format: Literal["markdown", "pdf"] = "markdown") -> Response:
-    conn = db(); project, _, _ = ensure_project_access(conn, project_id, request); conn.close(); data = internal_project_report(project_id)
+    conn = db(); project, _, _ = ensure_project_access(conn, project_id, request); conn.close()
     if format == "pdf":
-        return Response(_simple_pdf_bytes(f"CollabLedger project report #{project_id}"), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="project-{project_id}-report.pdf"'})
+        fail(501, "NOT_IMPLEMENTED", "中文 PDF 导出尚未实现；当前仅支持 Markdown，避免返回不完整的占位文件")
+    data = internal_project_report(project_id)
     return PlainTextResponse(_report_markdown(data), media_type="text/markdown; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="project-{project_id}-report.md"'})
 
-__all__ = ['members_load', 'get_recommendations', 'post_batch_recommendations', 'get_recommendation_history', 'post_recommendation_decision', 'project_risks', 'project_report', 'contribution_report', 'weekly_report', 'export_report']
+__all__ = ['members_load', 'get_recommendations', 'post_batch_recommendations', 'get_recommendation_history', 'post_recommendation_decision', 'project_risks', 'project_report', 'contribution_report', 'weekly_report', 'generate_weekly_report_route', 'export_report']

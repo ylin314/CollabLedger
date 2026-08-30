@@ -1404,15 +1404,15 @@ Query 参数：
 | `week_start` | date | 否 | 默认本周周一；格式非法返回 422；传入后按周一归一化 |
 | `start_date` | date | 否 | 兼容旧参数；与 `end_date` 同传时按周一归一化后视作 `week_start` |
 | `end_date` | date | 否 | 兼容旧参数 |
-| `refresh` | bool | 否 | `true` 时强制重新生成并覆盖该周期（不产生重复行） |
 | `format` | string | 否 | `json` 或 `markdown`，默认 `json` |
 
 行为：
 
-- 首次访问某周：基于真实数据实时生成（LLM 逐成员摘要 + 整体洞察）并落库 `weekly_reports`，返回 `stored=true`。
-- 再次访问同周：直接读库返回（除非 `refresh=true`）。
+- `GET` 只读查询已存在周报；首次访问尚未生成的周期返回 `exists=false`、`stored=false`，不会写入 `weekly_reports`。
+- `POST /api/projects/{project_id}/weekly-report` 是周报页面明确点击“生成/刷新”后使用的写接口，基于真实数据生成并幂等落库，返回 `stored=true`。
+- 再次 `GET` 同周期直接读库；再次 `POST` 同周期覆盖刷新但不产生重复行。
 - LLM 任一段失败或未配置：该段回退规则文本，整体 `source` 取 `llm | mixed | rule`，`llm_error` 记录失败原因但不阻塞接口。
-- 回看上周：传 `week_start=<上周周一>` 即可，未生成过则实时生成并落库。
+- 回看上周：`GET` 传 `week_start=<上周周一>` 只读取已存在记录；需要生成时由周报页面对同一路径发 `POST`。
 
 成功响应：`200 OK`
 
@@ -1431,8 +1431,15 @@ Query 参数：
     "tasks_in_progress": 5,
     "tasks_overdue": 1,
     "checkin_count": 12,
-    "contribution_count": 8,
-    "actual_hours": 26.5
+    "checkin_hours": 20.0,
+    "task_hours": 26.5,
+    "actual_hours": 20.0,
+    "hours_source": "member-wise_checkin_priority",
+    "contribution_count": 6,
+    "pending_contribution_count": 2,
+    "pending_count": 1,
+    "disputed_count": 1,
+    "pending_label": "待确认 2 项"
   },
   "highlights": ["完成登录鉴权模块", "完成数据库设计"],
   "risks": ["任务「接口联调」临近截止且尚未分配"],
@@ -1444,7 +1451,12 @@ Query 参数：
       "completed_tasks": 2,
       "active_tasks": 2,
       "checkin_count": 4,
+      "checkin_hours": 12.5,
+      "task_hours": 18.0,
       "actual_hours": 12.5,
+      "hours_source": "checkin",
+      "contribution_count": 2,
+      "pending_contribution_count": 1,
       "summary": "本周完成 2 项任务，累计工时 12.5 小时",
       "summary_source": "llm"
     }
@@ -1522,7 +1534,7 @@ GET /api/projects/{project_id}/report
 }
 ```
 
-默认只统计 `confirmed` 贡献，不生成成员排名。
+默认只统计 `confirmed` 贡献，不生成成员排名；`pending` 与 `disputed` 不进入主贡献数，合并单列为“待确认 X 项”。工时分列展示：有打卡时有效工时取打卡工时，没有打卡才取任务工时，二者绝不相加。
 
 ### 9.6 导出项目报告
 

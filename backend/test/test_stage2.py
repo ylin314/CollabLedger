@@ -71,7 +71,7 @@ def test_stage2_recommendation_load_risks_and_weekly(tmp_path, monkeypatch):
     assert {"overdue_task", "unassigned_task", "high_member_load"} <= types
     assert all(item.get("rule") for item in risks["risks"])
 
-    weekly = owner.get(f"/api/projects/{pid}/weekly-report").json()
+    weekly = owner.post(f"/api/projects/{pid}/weekly-report").json()
     assert weekly["summary"]["tasks_total"] >= 3
     assert weekly["disclaimer"]
     assert weekly["source"]
@@ -101,7 +101,7 @@ def test_weekly_report_persist_lookup_refresh_and_history(tmp_path, monkeypatch)
     member.post(f"/api/tasks/{task['id']}/start", json={})
     member.post(f"/api/tasks/{task['id']}/complete", json={"actual_hours": 1})
 
-    first = owner.get(f"/api/projects/{pid}/weekly-report").json()
+    first = owner.post(f"/api/projects/{pid}/weekly-report").json()
     assert first["stored"] is True and first["summary"]["tasks_completed"] == 1
     assert first["source"] == "rule" and first["insight"] and first["members"][0]["summary"]
     second = owner.get(f"/api/projects/{pid}/weekly-report").json()
@@ -111,7 +111,7 @@ def test_weekly_report_persist_lookup_refresh_and_history(tmp_path, monkeypatch)
     assert history["count"] == 1 and history["items"][0]["period_start"] == first["period"]["week_start"]
     assert history["items"][0]["tasks_completed"] == 1 and history["items"][0]["source"] == "rule"
 
-    refreshed = owner.get(f"/api/projects/{pid}/weekly-report", params={"refresh": "true"}).json()
+    refreshed = owner.post(f"/api/projects/{pid}/weekly-report").json()
     assert refreshed["stored"] is True and refreshed["generated_at"] >= first["generated_at"]
     history2 = owner.get(f"/api/projects/{pid}/weekly-report/history").json()
     assert history2["count"] == 1
@@ -188,3 +188,52 @@ def test_d2_risk_llm_failure_is_observable_and_redacted(tmp_path, monkeypatch):
     assert calls and payload["llm_error"]
     assert secret not in payload["llm_error"] and "[REDACTED]" in payload["llm_error"]
 
+
+
+def test_d3_report_is_read_only_until_explicit_generation_and_separates_contributions_hours(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "d3-meaning.db")
+    monkeypatch.setenv("LLM_API_KEY", "")
+    api.init_db()
+    owner, member = _client(), _client()
+    _account(owner, "周报组长", "d3-owner@example.com")
+    member_user = _account(member, "周报成员", "d3-member@example.com")
+    pid = owner.post("/api/projects", json={"name": "D3 口径项目"}).json()["id"]
+    code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
+    assert member.post(f"/api/invitations/{code}/accept").status_code == 200
+    task = owner.post(f"/api/projects/{pid}/tasks", json={"title": "有双来源工时的任务", "assignee_id": member_user["id"], "estimated_hours": 8}).json()
+    assert member.post(f"/api/tasks/{task['id']}/start", json={}).status_code == 200
+    assert member.post(f"/api/tasks/{task['id']}/complete", json={"actual_hours": 7}).status_code == 200
+    assert member.post(f"/api/tasks/{task['id']}/checkins", json={"content": "真实打卡", "hours": 2.5}).status_code == 201
+
+    confirmed = member.post(f"/api/projects/{pid}/contributions", json={"kind": "code", "title": "已确认贡献"}).json()
+    pending = member.post(f"/api/projects/{pid}/contributions", json={"kind": "document", "title": "待确认贡献"}).json()
+    disputed = member.post(f"/api/projects/{pid}/contributions", json={"kind": "research", "title": "争议贡献"}).json()
+    assert owner.post(f"/api/contributions/{confirmed['id']}/confirm", json={"note": "核验通过"}).status_code == 200
+    assert owner.post(f"/api/contributions/{disputed['id']}/dispute", json={"note": "证据不足"}).status_code == 200
+
+    # GET 只读：工作区/Agent/查看周报不会偷偷创建 weekly_reports。
+    preview = owner.get(f"/api/projects/{pid}/weekly-report").json()
+    assert preview["exists"] is False and preview["stored"] is False
+    conn = api.db()
+    assert conn.execute("SELECT COUNT(*) n FROM weekly_reports WHERE project_id=?", (pid,)).fetchone()["n"] == 0
+    conn.close()
+
+    report = owner.post(f"/api/projects/{pid}/weekly-report").json()
+    assert report["exists"] is True and report["stored"] is True
+    summary = report["summary"]
+    assert summary["contribution_count"] == 1
+    assert summary["pending_contribution_count"] == 2
+    assert summary["pending_count"] == 1 and summary["disputed_count"] == 1
+    assert summary["pending_label"] == "待确认 2 项"
+    assert summary["checkin_hours"] == 2.5
+    assert summary["task_hours"] == 7.0
+    assert summary["actual_hours"] == 2.5
+    member_row = next(row for row in report["members"] if row["user_id"] == member_user["id"])
+    assert member_row["contribution_count"] == 1 and member_row["pending_contribution_count"] == 2
+    assert member_row["checkin_hours"] == 2.5 and member_row["task_hours"] == 7.0
+    assert member_row["actual_hours"] == 2.5 and member_row["hours_source"] == "checkin"
+
+    markdown = owner.get(f"/api/projects/{pid}/weekly-report", params={"format": "markdown"})
+    assert "确认贡献：1 项" in markdown.text
+    assert "待确认 2 项" in markdown.text
+    assert "打卡工时：2.5" in markdown.text and "任务工时：7.0" in markdown.text

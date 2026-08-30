@@ -351,7 +351,7 @@ def test_analytics_recommendations_risks_and_reports(tmp_path, monkeypatch):
     report = owner.get(f"/api/projects/{pid}/report")
     assert report.status_code == 200
     assert owner.get(f"/api/projects/{pid}/contribution-report").status_code == 200
-    weekly = owner.get(f"/api/projects/{pid}/weekly-report")
+    weekly = owner.post(f"/api/projects/{pid}/weekly-report")
     assert weekly.status_code == 200
     markdown = owner.get(f"/api/projects/{pid}/weekly-report", params={"format": "markdown"})
     assert markdown.status_code == 200 and markdown.text
@@ -499,8 +499,8 @@ def test_weekly_report_history_limit_before_and_validation(tmp_path, monkeypatch
     member_c.post(f"/api/tasks/{task}/start")
     member_c.post(f"/api/tasks/{task}/complete", json={"actual_hours": 2})
 
-    owner.get(f"/api/projects/{pid}/weekly-report", params={"refresh": True, "week_start": "2026-08-17"})
-    owner.get(f"/api/projects/{pid}/weekly-report", params={"refresh": True, "week_start": "2026-08-24"})
+    owner.post(f"/api/projects/{pid}/weekly-report", params={"week_start": "2026-08-17"})
+    owner.post(f"/api/projects/{pid}/weekly-report", params={"week_start": "2026-08-24"})
     history = owner.get(f"/api/projects/{pid}/weekly-report/history")
     assert history.status_code == 200 and history.json()["count"] >= 2
 
