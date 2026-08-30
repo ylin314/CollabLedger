@@ -142,7 +142,7 @@ GET /api/projects/{project_id}/weekly-report/history
 python scripts/seed_stage2_demo.py
 
 # 启动后端(设置 LLM 环境变量后 LLM 生效;不设置则走规则回退)
-$env:COLLAB_DB = "$PWD\stage2-demo.db"
+$env:COLLAB_DB = "$PWD\collab.db"
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 # 查询本周：只读，不存在时返回 exists=false，不会落库

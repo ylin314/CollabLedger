@@ -215,6 +215,10 @@ class AgentIn(BaseModel):
     session_id: str = Field(default="default", min_length=1, max_length=100)
 
 
+class AgentSessionRenameIn(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+
+
 class RecommendBatchIn(BaseModel):
     limit: int = Field(default=3, ge=1, le=20)
     include_owner: bool = False

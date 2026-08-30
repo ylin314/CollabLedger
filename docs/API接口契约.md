@@ -1645,7 +1645,31 @@ GET /api/projects/{project_id}/agent/sessions
 
 返回当前用户自己的会话列表，包含 `session_id`、`last_message`、`message_count`、`updated_at`；同项目其他成员不可读取这些对话记录。
 
-### 9.9 清空 Agent 会话
+### 9.9 获取 Agent 会话消息
+
+GET /api/projects/{project_id}/agent/sessions/{session_id}/messages
+
+权限：需要登录，且用户必须属于项目。
+
+返回指定会话中按时间升序排列的历史消息。`role` 可能为 `user`、`assistant` 或会话压缩摘要 `summary`。
+
+### 9.10 重命名 Agent 会话
+
+PATCH /api/projects/{project_id}/agent/sessions/{session_id}
+
+权限：需要登录，且用户必须是项目成员。
+
+请求体：
+
+```json
+{
+  "title": "风险分析"
+}
+```
+
+- `title`：会话名称，必填，1-100 个字符。会话尚未发送消息时也可以先重命名。
+
+### 9.11 清空 Agent 会话
 
 ```http
 DELETE /api/projects/{project_id}/agent/sessions/{session_id}

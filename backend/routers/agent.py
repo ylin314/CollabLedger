@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
@@ -21,6 +22,7 @@ from backend.services.agent_runtime import get_agent_runtime as _default_get_age
 from backend.services.analytics import internal_project_snapshot
 
 router = APIRouter()
+logger = logging.getLogger("collab_ledger.agent")
 
 
 def get_agent_runtime():
@@ -31,6 +33,15 @@ def get_agent_runtime():
     return _default_get_agent_runtime()
 
 
+def _has_agent_memory(conn) -> bool:
+    """跨 SQLite/PostgreSQL 检查 Agent 记忆表，避免依赖 sqlite_master。"""
+    try:
+        conn.execute("SELECT 1 FROM agent_memory LIMIT 1").fetchone()
+        return True
+    except Exception:
+        return False
+
+
 @router.get("/api/agent/config")
 def agent_config(request: Request) -> dict[str, Any]:
     conn = db(); require_user(conn, request); conn.close(); return AgentConfig.from_env().public_dict()
@@ -39,7 +50,21 @@ def agent_config(request: Request) -> dict[str, Any]:
 @router.post("/api/projects/{project_id}/agent/chat")
 def project_agent_chat(project_id: int, payload: AgentIn, request: Request) -> dict[str, Any]:
     conn = db(); _, user, _ = ensure_project_access(conn, project_id, request, "member"); conn.close()
-    result = get_agent_runtime().run(project_id, payload.message, payload.session_id, user_id=user["id"] if user else None)
+    try:
+        result = get_agent_runtime().run(
+            project_id,
+            payload.message,
+            payload.session_id,
+            user_id=user["id"] if user else None,
+        )
+    except Exception:
+        # Agent 运行异常不能落成无上下文的 500；记录堆栈并返回可识别服务错误。
+        logger.exception(
+            "agent chat failed: project_id=%s session_id=%s",
+            project_id,
+            payload.session_id,
+        )
+        fail(503, "AGENT_UNAVAILABLE", "Agent 服务暂时不可用，请检查后端日志或稍后重试")
     facts = result.get("facts") or {}
     facts.setdefault("project_id", project_id)
     facts.setdefault("risk_count", (facts.get("risks") or {}).get("count", 0))
@@ -50,19 +75,112 @@ def project_agent_chat(project_id: int, payload: AgentIn, request: Request) -> d
 @router.get("/api/projects/{project_id}/agent/sessions")
 def agent_sessions(project_id: int, request: Request) -> dict[str, Any]:
     conn = db(); _, user, _ = ensure_project_access(conn, project_id, request)
-    # 对话属于当前用户；项目事实仍按项目成员权限读取。
-    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory'").fetchone()
-    if not exists: conn.close(); return {"items": []}
-    rows = conn.execute("""SELECT session_id,COUNT(*) message_count,MAX(created_at) updated_at,
-        (SELECT content FROM agent_memory a2 WHERE a2.project_id=a.project_id AND a2.session_id=a.session_id AND a2.user_id=a.user_id ORDER BY id DESC LIMIT 1) last_message
-        FROM agent_memory a WHERE project_id=? AND user_id=? GROUP BY session_id,user_id ORDER BY updated_at DESC""", (project_id, user["id"])).fetchall(); conn.close(); return {"items": [dict(row) for row in rows]}
+    user_id = user["id"] if user else None
+    if not _has_agent_memory(conn):
+        conn.close()
+        return {"items": []}
+    rows = conn.execute(
+        """SELECT a.session_id,COUNT(*) message_count,MAX(a.created_at) updated_at,
+        (SELECT content FROM agent_memory a2 WHERE a2.project_id=a.project_id
+          AND a2.session_id=a.session_id AND a2.user_id=? ORDER BY id DESC LIMIT 1) last_message,
+        s.title
+        FROM agent_memory a LEFT JOIN agent_sessions s
+          ON s.project_id=a.project_id AND s.session_key=a.session_id
+        WHERE a.project_id=? AND a.user_id=?
+        GROUP BY a.session_id,s.title ORDER BY updated_at DESC""",
+        (user_id, project_id, user_id),
+    ).fetchall()
+    known = {row["session_id"] for row in rows}
+    metadata_rows = conn.execute(
+        "SELECT session_key session_id,title,created_at,updated_at "
+        "FROM agent_sessions WHERE project_id=? AND (user_id=? OR user_id IS NULL)",
+        (project_id, user_id),
+    ).fetchall()
+    conn.close()
+    items = [dict(row) for row in rows]
+    items.extend(
+        {
+            "session_id": row["session_id"],
+            "title": row["title"],
+            "message_count": 0,
+            "updated_at": row["updated_at"] or row["created_at"],
+            "last_message": None,
+        }
+        for row in metadata_rows
+        if row["session_id"] not in known
+    )
+    items.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    return {"items": items}
+
+
+@router.patch("/api/projects/{project_id}/agent/sessions/{session_id}")
+def rename_agent_session(
+    project_id: int,
+    session_id: str,
+    payload: AgentSessionRenameIn,
+    request: Request,
+) -> dict[str, Any]:
+    """重命名当前用户的 Agent 会话元数据。"""
+    conn = db()
+    _, user, _ = ensure_project_access(conn, project_id, request, "member")
+    title = payload.title.strip()
+    if not title:
+        conn.close()
+        fail(422, "VALIDATION_ERROR", "会话名称不能为空")
+    stamp = now_iso()
+    session = conn.execute(
+        "SELECT id FROM agent_sessions WHERE project_id=? AND session_key=?",
+        (project_id, session_id),
+    ).fetchone()
+    if session:
+        conn.execute(
+            "UPDATE agent_sessions SET title=?,updated_at=? WHERE id=?",
+            (title, stamp, session["id"]),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO agent_sessions(project_id,user_id,session_key,title,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+            (project_id, user["id"] if user else None, session_id, title, stamp, stamp),
+        )
+    conn.commit()
+    conn.close()
+    return {"project_id": project_id, "session_id": session_id, "title": title, "updated_at": stamp}
+
+
+@router.get("/api/projects/{project_id}/agent/sessions/{session_id}/messages")
+def agent_session_messages(project_id: int, session_id: str, request: Request) -> dict[str, Any]:
+    """读取当前用户指定 Agent 会话历史，供前端切换会话时恢复消息。"""
+    conn = db(); _, user, _ = ensure_project_access(conn, project_id, request)
+    user_id = user["id"] if user else None
+    if not _has_agent_memory(conn):
+        conn.close()
+        return {"session_id": session_id, "items": []}
+    rows = conn.execute(
+        "SELECT role,content,created_at FROM agent_memory "
+        "WHERE project_id=? AND session_id=? AND user_id=? ORDER BY id ASC",
+        (project_id, session_id, user_id),
+    ).fetchall()
+    conn.close()
+    return {"session_id": session_id, "items": [dict(row) for row in rows]}
 
 
 @router.delete("/api/projects/{project_id}/agent/sessions/{session_id}", status_code=204)
 def clear_agent_session(project_id: int, session_id: str, request: Request) -> Response:
     conn = db(); _, user, _ = ensure_project_access(conn, project_id, request, "owner")
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory'").fetchone():
-        conn.execute("DELETE FROM agent_memory WHERE project_id=? AND session_id=? AND user_id=?", (project_id, session_id, user["id"])); conn.commit()
+    user_id = user["id"] if user else None
+    if _has_agent_memory(conn):
+        conn.execute(
+            "DELETE FROM agent_memory WHERE project_id=? AND session_id=? AND user_id=?",
+            (project_id, session_id, user_id),
+        )
+    # 只有会话已无任何用户消息时才删除共享元数据，避免影响其他人的私有记录。
+    remaining = conn.execute(
+        "SELECT 1 FROM agent_memory WHERE project_id=? AND session_id=? LIMIT 1",
+        (project_id, session_id),
+    ).fetchone()
+    if remaining is None:
+        conn.execute("DELETE FROM agent_sessions WHERE project_id=? AND session_key=?", (project_id, session_id))
+    conn.commit()
     conn.close(); return Response(status_code=204)
 
 
@@ -75,4 +193,4 @@ def agent(project_id: int, payload: AgentIn, request: Request) -> dict[str, Any]
 def agent_chat(project_id: int, payload: AgentIn, request: Request) -> dict[str, Any]:
     return project_agent_chat(project_id, payload, request)
 
-__all__ = ['agent_config', 'project_agent_chat', 'agent_sessions', 'clear_agent_session', 'agent', 'agent_chat']
+__all__ = ['agent_config', 'project_agent_chat', 'agent_sessions', 'agent_session_messages', 'clear_agent_session', 'agent', 'agent_chat']

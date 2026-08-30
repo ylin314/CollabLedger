@@ -16,7 +16,6 @@ backups/
 *.db
 collab.db
 .demo.db
-stage2-demo.db
 
 # GitNexus 本地知识图谱索引
 .gitnexus/

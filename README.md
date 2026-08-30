@@ -220,8 +220,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/projects -ContentType '
 
 ```powershell
 python -m pytest -q backend/test_stage2.py
-python scripts/seed_stage2_demo.py  # 重置阶段二演示数据
-$env:COLLAB_DB="$PWD\stage2-demo.db"
+python scripts/seed_stage2_demo.py  # 写入/重置 collab.db 中的阶段二演示数据
+$env:COLLAB_DB="$PWD\collab.db"
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 

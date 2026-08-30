@@ -22,7 +22,7 @@ def summary_recent_limit() -> int:
 
 
 class AgentMemory:
-    """按项目隔离的轻量长期记忆，保存对话事实而非设备行为。"""
+    """按项目和用户隔离的轻量长期记忆，保存对话事实而非设备行为。"""
 
     def __init__(self, db_path):
         self.db_path = db_path
@@ -35,17 +35,72 @@ class AgentMemory:
     def _ensure_schema(self) -> None:
         initialize(self.db_path)
 
-    def append(self, project_id: int, role: str, content: str, session_id: str = "default", user_id: int | None = None) -> None:
+    def append(
+        self,
+        project_id: int,
+        role: str,
+        content: str,
+        session_id: str = "default",
+        user_id: int | None = None,
+    ) -> None:
         conn = self._connect()
+        stamp = now_iso()
+        # agent_memory 是兼容旧数据的宽松记忆表；单元测试和内部调用可能没有
+        # 对应的 projects 行，因此仅在真实项目存在时维护会话元数据。
+        project_exists = conn.execute(
+            "SELECT 1 FROM projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        if project_exists:
+            session = conn.execute(
+                "SELECT id FROM agent_sessions WHERE project_id=? AND session_key=?",
+                (project_id, session_id),
+            ).fetchone()
+            if session:
+                conn.execute(
+                    "UPDATE agent_sessions SET updated_at=? WHERE id=?",
+                    (stamp, session["id"]),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO agent_sessions(project_id,user_id,session_key,title,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                    (project_id, user_id, session_id, None, stamp, stamp),
+                )
         conn.execute(
             "INSERT INTO agent_memory(project_id,session_id,role,content,created_at,user_id) VALUES (?,?,?,?,?,?)",
-            (project_id, session_id, role, content[:12000], now_iso(), user_id),
+            (project_id, session_id, role, content[:12000], stamp, user_id),
         )
         conn.commit()
         conn.close()
 
-    def recent(self, project_id: int, session_id: str = "default", limit: int = 8, user_id: int | None = None) -> list[dict[str, Any]]:
-        """按用户隔离返回消息；旧的无 user_id 记录不会泄露给已认证用户。"""
+    def history(
+        self,
+        project_id: int,
+        session_id: str = "default",
+        limit: int = 30,
+        user_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """返回当前用户会话的完整可展示历史（摘要也保留）。"""
+        limit = max(1, min(limit, 100))
+        conn = self._connect()
+        user_clause = "user_id IS NULL" if user_id is None else "user_id=?"
+        user_args = () if user_id is None else (user_id,)
+        rows = conn.execute(
+            f"SELECT role, content, created_at FROM agent_memory "
+            f"WHERE project_id=? AND session_id=? AND {user_clause} ORDER BY id ASC LIMIT ?",
+            (project_id, session_id, *user_args, limit),
+        ).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def recent(
+        self,
+        project_id: int,
+        session_id: str = "default",
+        limit: int = 8,
+        user_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """返回当前用户最近非摘要消息；若存在摘要则前插压缩上下文。"""
         limit = max(1, min(limit, 30))
         conn = self._connect()
         user_clause = "user_id IS NULL" if user_id is None else "user_id=?"
@@ -64,8 +119,14 @@ class AgentMemory:
             items.insert(0, {"role": SUMMARY_ROLE, "content": summary["content"], "created_at": summary["created_at"]})
         return items
 
-    def summarize_old(self, project_id: int, session_id: str = "default", llm_complete=None, user_id: int | None = None) -> bool:
-        """压缩当前用户会话；失败保留原消息，并通过 last_error 提供可观测 warning。"""
+    def summarize_old(
+        self,
+        project_id: int,
+        session_id: str = "default",
+        llm_complete=None,
+        user_id: int | None = None,
+    ) -> bool:
+        """压缩当前用户会话；失败保留原消息并提供可观测 warning。"""
         self.last_error = None
         threshold = summary_threshold()
         keep = summary_recent_limit()
@@ -80,12 +141,11 @@ class AgentMemory:
             f"SELECT id, role, content, created_at FROM agent_memory WHERE project_id=? AND session_id=? AND role<>? AND {user_clause} ORDER BY id ASC",
             (project_id, session_id, SUMMARY_ROLE, *user_args),
         ).fetchall()
-        # 全部非摘要消息超过 threshold+keep 时，压缩最旧的 threshold 条；反复调用直到历史全部收进摘要。
+        # 全部非摘要消息超过 threshold+keep 时，压缩最旧的 threshold 条。
         if len(rows) <= threshold + keep or llm_complete is None:
             conn.close()
             return False
         old_rows = rows[:threshold]
-        # 旧摘要一并作为上下文，保证压缩是链式的（不丢上一段摘要的信息）。
         summary_messages = []
         if latest_summary_id is not None:
             summary_messages.append({"role": "system", "content": f"已有会话摘要：{latest_summary_id['content']}"})
