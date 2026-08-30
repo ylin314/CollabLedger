@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -23,6 +24,7 @@ from backend.services.recommend import (
 LOAD_LABELS = {"low": "低负载", "normal": "正常", "high": "高负载"}
 
 
+ACTIVE_LOAD_STATUSES = ("assigned", "in_progress", "paused", "overdue")
 LOAD_WEIGHT_DEFAULTS = {"in_progress": 1.0, "assigned": 0.6, "paused": 0.5, "overdue": 1.3}
 
 
@@ -56,11 +58,11 @@ def internal_member_load(project_id: int) -> dict[str, Any]:
             "weighted_load": round(weighted, 2),
             "weighted_level": weighted_level,
             "weighted_label": LOAD_LABELS[weighted_level],
-            "weighted_overdue_tasks": sum(1 for task in tasks if task["status"] in ("overdue", "unfinished")),
-            "rule": "进行中 / 已分配 / 暂停 / 延期任务计入当前负载；达到最大并发任务数视为超负载",
+            "weighted_overdue_tasks": sum(1 for task in tasks if task["status"] == "overdue"),
+            "rule": "进行中 / 已分配 / 暂停 / 延期任务计入当前负载；未完成（unfinished）是项目结束后的终态，不计当前负载",
         })
     conn.close()
-    return {"project_id": project_id, "generated_at": now_iso(), "rule": "负载 = 当前占用任务数 / 最大并发任务数；加权负载 = Σ状态权重 / 最大并发任务数（进行中 1.0、已分配 0.6、暂停 0.5、延期 1.3）；<0.5 低负载，0.5-0.8 正常，>0.8 高负载", "members": result}
+    return {"project_id": project_id, "generated_at": now_iso(), "active_statuses": list(ACTIVE_LOAD_STATUSES), "rule": "负载 = 当前占用任务数 / 最大并发任务数；加权负载 = Σ状态权重 / 最大并发任务数（进行中 1.0、已分配 0.6、暂停 0.5、延期 1.3）；未完成（unfinished）不计当前负载；<0.5 低负载，0.5-0.8 正常，>0.8 高负载", "members": result}
 
 
 
@@ -86,10 +88,23 @@ def _rule_risk_summary(risks: list[dict[str, Any]]) -> str:
     return f"当前共有 {len(risks)} 个项目风险，优先关注：{first.get('message')}。建议按风险严重度逐项处理。"
 
 
-def _llm_risk_summary(project_id: int, risks: list[dict[str, Any]]) -> tuple[str, str]:
-    """LLM 生成风险自然语言总结；任一环节失败回退规则拼接，接口不报错。"""
-    if not risks:
-        return "当前未发现明显项目风险。", "rule"
+def _safe_llm_error(exc: Exception) -> str:
+    """返回可诊断但不泄露凭据的简短错误。"""
+    text = str(exc).strip() or type(exc).__name__
+    for env_key in ("LLM_API_KEY", "OPENAI_API_KEY"):
+        secret = os.getenv(env_key, "")
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"(?i)((?:authorization|api[_-]?key|token|bearer)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)([?&](?:api_key|key|token)=)[^&\s]+", r"\1[REDACTED]", text)
+    return text[:240]
+
+
+def _llm_risk_summary(project_id: int, risks: list[dict[str, Any]]) -> tuple[str, str, str, Optional[str]]:
+    """LLM 生成风险总结；失败时显式返回规则回退状态和脱敏错误。"""
+    fallback = _rule_risk_summary(risks)
+    if not AgentConfigAvailable():
+        return fallback, "rule", "not_configured", None
     facts = [{"type": r.get("type"), "level": r.get("level"), "message": r.get("message"), "rule": r.get("rule")} for r in risks[:8]]
     prompt = (
         "你是协作账本的风险总结助手。只依据给定的风险事实，用 1-2 句中文总结当前最需要关注的风险并给出下一步建议。"
@@ -97,14 +112,13 @@ def _llm_risk_summary(project_id: int, risks: list[dict[str, Any]]) -> tuple[str
         f"项目事实：{json.dumps({'project_id': project_id, 'risks': facts}, ensure_ascii=False)}"
     )
     try:
-        from backend.services.recommend import llm_json
         data = llm_json(prompt, timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "45")))
         text = str(data.get("summary") or "").strip()
         if text:
-            return text, "llm"
-    except Exception:
-        pass
-    return _rule_risk_summary(risks), "rule"
+            return text, "llm", "ok", None
+        return fallback, "rule", "failed", "LLM 未返回风险总结"
+    except Exception as exc:
+        return fallback, "rule", "failed", _safe_llm_error(exc)
 
 
 def internal_project_risks(project_id: int, summarize: bool = False) -> dict[str, Any]:
@@ -116,12 +130,13 @@ def internal_project_risks(project_id: int, summarize: bool = False) -> dict[str
         elif task["due_date"] and task["due_date"] <= soon.isoformat():
             risks.append(_risk_item("upcoming_deadline", "medium", f"任务「{task['title']}」临近截止", "截止日期在未来 3 天内", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
         if task["assignee_id"] is None:
-            risks.append(_risk_item("unassigned_task", "medium", f"任务「{task['title']}」尚未分配", "任务没有负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
-        if task["priority"] == "high" and task["status"] == "unassigned":
-            risks.append(_risk_item("critical_unassigned", "high", f"关键任务「{task['title']}」无人承接", "高优先级任务未分配负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
+            if task["priority"] == "high":
+                risks.append(_risk_item("critical_unassigned", "high", f"关键任务「{task['title']}」无人承接", "高优先级任务未分配负责人（已聚合普通未分配风险）", task_id=task["id"], due_date=task["due_date"], status=task["status"], source_types=["critical_unassigned", "unassigned_task"], unassigned_category="critical"))
+            else:
+                risks.append(_risk_item("unassigned_task", "medium", f"任务「{task['title']}」尚未分配", "任务没有负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"], source_types=["unassigned_task"], unassigned_category="normal"))
     for member in internal_member_load(project_id)["members"]:
-        if member["load_level"] == "high":
-            risks.append(_risk_item("high_member_load", "medium", f"{member['name']}当前负载为 {member['current_task_count']}/{member['max_concurrent_tasks']}", "当前占用任务数 / 最大并发任务数 > 0.8", user_id=member["user_id"], current_task_count=member["current_task_count"], max_concurrent_tasks=member["max_concurrent_tasks"]))
+        if member["weighted_level"] == "high":
+            risks.append(_risk_item("high_member_load", "medium", f"{member['name']}当前加权负载为 {member['weighted_load']:.2f}", "加权负载 = Σ状态权重 / 最大并发任务数，> 0.8 为高负载", user_id=member["user_id"], current_task_count=member["current_task_count"], max_concurrent_tasks=member["max_concurrent_tasks"], load_ratio=member["load_ratio"], load_level=member["load_level"], weighted_load=member["weighted_load"], weighted_level=member["weighted_level"]))
     last = conn.execute("SELECT MAX(at) at FROM task_logs l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=?", (project_id,)).fetchone()["at"]
     if last:
         try:
@@ -132,9 +147,11 @@ def internal_project_risks(project_id: int, summarize: bool = False) -> dict[str
     risks.sort(key=lambda item: item.get("severity", 0), reverse=True)
     payload: dict[str, Any] = {"project_id": project_id, "generated_at": now_iso(), "count": len(risks), "risks": risks, "rule": "覆盖延期、临近截止、无负责人和高负载四类风险；按严重度降序排列"}
     if summarize and risks:
-        summary, summary_source = _llm_risk_summary(project_id, risks)
+        summary, summary_source, llm_status, llm_error = _llm_risk_summary(project_id, risks)
         payload["summary"] = summary
         payload["summary_source"] = summary_source
+        payload["llm_status"] = llm_status
+        payload["llm_error"] = llm_error
     conn.close()
     return payload
 

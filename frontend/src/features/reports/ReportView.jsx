@@ -4,12 +4,13 @@ import { getJson } from "../../api/client";
 import { initials } from "../../shared/core";
 import { PageTitle } from "../../shared/components";
 
-function ReportView({ project, report, memberStats, tasks, weekly, risks }) {
+function ReportView({ project, report, memberStats, tasks, weekly, risks, diagnostics }) {
   const [weeklyData, setWeeklyData] = useState(weekly);
   const [history, setHistory] = useState([]);
   const [exportFormat, setExportFormat] = useState("markdown");
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const riskError = diagnostics?.risksError || "";
   useEffect(() => {
     setWeeklyData(weekly);
   }, [weekly]);
@@ -168,19 +169,28 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks }) {
               </p>
             </div>
             <span className="source-label">
-              {risks?.summary_source === "llm" ? "AI 总结" : "规则总结"}
+              {risks?.summary_source === "llm"
+                ? "AI 总结"
+                : risks?.llm_status === "failed"
+                  ? "AI 失败，规则回退"
+                  : "规则总结"}
             </span>
           </div>
           <div className="risk-list">
-            {(risks?.risks || []).length ? (
+            {riskError ? (
+              <div className="form-error">风险数据加载失败：{riskError}</div>
+            ) : (risks?.risks || []).length ? (
               (risks.risks || []).map((item, index) => (
                 <div
                   className={`risk-item ${item.level}`}
-                  key={`${item.type}-${index}`}
+                  key={`${item.type}-${item.task_id || item.user_id || index}`}
                 >
                   <strong>{item.message}</strong>
                   <span>
                     严重度 {item.severity ?? "—"} · {item.rule}
+                    {item.weighted_load != null
+                      ? ` · 加权负载 ${item.weighted_load}`
+                      : ""}
                   </span>
                 </div>
               ))
@@ -188,6 +198,9 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks }) {
               <div className="empty-state">暂无明显风险</div>
             )}
           </div>
+          {risks?.llm_status === "failed" && risks?.llm_error && (
+            <p className="muted-note">AI 风险总结失败：{risks.llm_error}</p>
+          )}
         </section>
       </div>
       <div className="report-grid">

@@ -1,6 +1,6 @@
 # D1-D7 整改路线与 TODO
 
-> 审计结论已于 2026-08-30 获用户确认；当前只推进 D1，严格顺序仍为 D1 → D2 → D3 → D4 → D5 → D6 → D7。每阶段必须同时具备代码、接口、数据库、前端、权限、失败/降级、真实运行和重启持久化证据，才可进入下一阶段。
+> 审计结论已于 2026-08-30 获用户确认；D1、D2 已完成本地整改与阶段提交准备，当前严格串行进入 D3，顺序仍为 D1 → D2 → D3 → D4 → D5 → D6 → D7。每阶段必须同时具备代码、接口、数据库、前端、权限、失败/降级、真实运行和重启持久化证据，才可进入下一阶段。
 
 ## 阶段 0：审计结论确认（已完成）
 
@@ -12,7 +12,7 @@
 - [x] D5 纳入可选 Webhook 与 GitHub 反向创建 Issue/PR；飞书/腾讯文档、GitHub OAuth 等原范围外能力纳入整改。
 - [x] D6 对外使用 API 契约字段，深化算法字段附加返回。
 
-## D1 智能推荐（当前阶段）
+## D1 智能推荐（已完成本地整改）
 
 ### 已完成或已落地
 
@@ -31,13 +31,13 @@
 
 ## D2 负载与风险
 
-- [ ] 冻结 unfinished 是否计入当前负载和 weighted_overdue_tasks。
-- [ ] 统一 high_member_load 使用计数或 weighted 口径，并同步 API/前端文案。
-- [ ] 落实 critical_unassigned 与 unassigned_task 聚合为一条的返回和展示规则，保留来源明细。
-- [ ] 风险 LLM 失败返回脱敏可诊断错误，服务端日志记录 request id，禁止吞异常。
-- [ ] 前端区分接口故障、无风险、LLM rule fallback，禁止 `null` 伪装空数据。
-- [ ] 用真实边界数据验证延期、临近截止、无负责人、关键无人承接、加权环境变量。
-- [ ] 阶段验收：成员隔离、风险字段、排序、fallback、桌面/390px、重启。
+- [x] 冻结口径：`unfinished` 不计当前负载，`weighted_overdue_tasks` 只计 `overdue`。
+- [x] `high_member_load` 统一使用 weighted 口径，保留计数字段兼容并同步前端文案。
+- [x] `critical_unassigned` 与 `unassigned_task` 聚合为一条，使用 `source_types` 保留来源明细。
+- [x] 风险 LLM 失败返回脱敏可诊断错误并禁止吞异常；生产 request id/服务端集中日志留 D7。
+- [x] 前端区分接口故障、无风险、LLM rule fallback，禁止风险/负载 `null` 伪装空数据。
+- [x] 用临时 SQLite 真实边界数据验证延期、无负责人、关键无人承接、原始 normal/加权 high 和错误脱敏；真实 LLM 主路径成功。
+- [ ] D7 联合验收：成员隔离浏览器动作、桌面/390px、PostgreSQL、容器重启；D2 本地代码/接口/SQLite/LLM/前端构建已通过。
 
 ## D3 周报
 

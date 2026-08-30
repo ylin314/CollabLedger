@@ -76,6 +76,7 @@ function App() {
   const [risks, setRisks] = useState(null);
   const [memberLoad, setMemberLoad] = useState(null);
   const [weekly, setWeekly] = useState(null);
+  const [workspaceDiagnostics, setWorkspaceDiagnostics] = useState({});
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [online, setOnline] = useState(Boolean(auth));
@@ -97,6 +98,7 @@ function App() {
       setRisks(null);
       setMemberLoad(null);
       setWeekly(null);
+      setWorkspaceDiagnostics({});
       setLoadError("");
       queryClient.clear();
       routerNavigate("/login", { replace: true });
@@ -149,6 +151,7 @@ function App() {
         setRisks(null);
         setMemberLoad(null);
         setWeekly(null);
+        setWorkspaceDiagnostics({});
         setOnline(true);
         if (route.page !== "classrooms" && window.location.hash !== "#/projects/new")
           routerNavigate(routePath(null, "new"), { replace: true });
@@ -160,6 +163,7 @@ function App() {
       setRisks(workspace.risks);
       setMemberLoad(workspace.memberLoad);
       setWeekly(workspace.weekly);
+      setWorkspaceDiagnostics(workspace.diagnostics || {});
       setOnline(true);
       localStorage.setItem("collab_project_id", String(selectedId));
       if (route.projectId !== selectedId) {
@@ -189,6 +193,7 @@ function App() {
       setRisks(null);
       setMemberLoad(null);
       setWeekly(null);
+      setWorkspaceDiagnostics({});
       queryClient.clear();
       routerNavigate("/login", { replace: true });
     }
@@ -414,6 +419,7 @@ function App() {
     setRisks(null);
     setMemberLoad(null);
     setWeekly(null);
+    setWorkspaceDiagnostics({});
     routerNavigate(routePath(null, "new"), { replace: true });
   }
 
@@ -546,6 +552,7 @@ function App() {
                   risks={risks}
                   weekly={weekly}
                   memberLoad={memberLoad}
+                  diagnostics={workspaceDiagnostics}
                   onNavigate={navigate}
                   onAction={taskAction}
                   onRecommend={setRecommendTask}
@@ -611,6 +618,7 @@ function App() {
                   tasks={tasks}
                   weekly={weekly}
                   risks={risks}
+                  diagnostics={workspaceDiagnostics}
                 />
               )}{" "}
               {active === "agent" && (

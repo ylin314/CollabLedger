@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 import backend.main as api
+import backend.services.analytics as analytics
 
 
 def _client() -> TestClient:
@@ -38,6 +39,7 @@ def test_stage2_recommendation_load_risks_and_weekly(tmp_path, monkeypatch):
     assert docs_dev.patch("/api/users/me", json={"skills": ["文档", "答辩"], "max_concurrent_tasks": 3}).status_code == 200
 
     busy = owner.post(f"/api/projects/{pid}/tasks", json={"title": "占满前端容量", "assignee_id": frontend_user["id"], "task_type": "前端"}).json()
+    assert frontend_dev.post(f"/api/tasks/{busy['id']}/start", json={}).status_code == 200
     owner.post(f"/api/projects/{pid}/tasks", json={"title": "未分配后端接口", "task_type": "后端", "due_date": "2020-01-01"})
     done = owner.post(f"/api/projects/{pid}/tasks", json={"title": "已完成后端模块", "assignee_id": backend_user["id"], "task_type": "后端", "estimated_hours": 4}).json()
     backend_dev.post(f"/api/tasks/{done['id']}/start", json={})
@@ -129,31 +131,60 @@ def test_d2_weighted_load_and_risk_severity(tmp_path, monkeypatch):
     pid = owner.post("/api/projects", json={"name": "D2 项目"}).json()["id"]
     code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
     assert backend_dev.post(f"/api/invitations/{code}/accept").status_code == 200
-    assert backend_dev.patch("/api/users/me", json={"max_concurrent_tasks": 2}).status_code == 200
+    assert backend_dev.patch("/api/users/me", json={"max_concurrent_tasks": 3}).status_code == 200
 
-    # 分配给后端同学,再标记为延期(overdue 权重 1.3)
-    overdue = owner.post(f"/api/projects/{pid}/tasks", json={"title": "延期后端任务", "assignee_id": backend_user["id"], "task_type": "后端"}).json()
-    assert owner.post(f"/api/tasks/{overdue['id']}/overdue", json={}).status_code == 200
-    # 高优先级未分配 → critical_unassigned(severity 95)
-    owner.post(f"/api/projects/{pid}/tasks", json={"title": "关键未分配任务", "task_type": "后端", "priority": "high"})
+    # 两个延期任务：原始负载 2/3 为 normal，加权负载 2.6/3 为 high。
+    for index in range(2):
+        overdue = owner.post(f"/api/projects/{pid}/tasks", json={"title": f"延期后端任务{index}", "assignee_id": backend_user["id"], "task_type": "后端"}).json()
+        assert owner.post(f"/api/tasks/{overdue['id']}/overdue", json={}).status_code == 200
+    critical = owner.post(f"/api/projects/{pid}/tasks", json={"title": "关键未分配任务", "task_type": "后端", "priority": "high"}).json()
 
     load = owner.get(f"/api/projects/{pid}/members/load").json()
+    assert load["active_statuses"] == ["assigned", "in_progress", "paused", "overdue"]
     backend = next(item for item in load["members"] if item["user_id"] == backend_user["id"])
-    assert backend["weighted_overdue_tasks"] == 1
-    assert backend["weighted_load"] == 0.65  # (1.3) / 2
-    assert backend["weighted_level"] == "normal"
-    assert backend["weighted_label"] == "正常"
-    # 向后兼容字段保留
-    assert backend["load_ratio"] is not None and backend["load_level"] in ("low", "normal", "high")
+    assert backend["weighted_overdue_tasks"] == 2
+    assert backend["weighted_load"] == 0.87
+    assert backend["weighted_level"] == "high"
+    assert backend["weighted_label"] == "高负载"
+    assert backend["load_level"] == "normal"  # 证明风险采用加权口径，而非旧任务数口径。
 
     risks = owner.get(f"/api/projects/{pid}/risks").json()
     severities = [item["severity"] for item in risks["risks"]]
     assert severities == sorted(severities, reverse=True)
+    critical_rows = [item for item in risks["risks"] if item.get("task_id") == critical["id"]]
+    assert len(critical_rows) == 1
+    assert critical_rows[0]["type"] == "critical_unassigned"
+    assert critical_rows[0]["source_types"] == ["critical_unassigned", "unassigned_task"]
     types = {item["type"] for item in risks["risks"]}
-    assert "critical_unassigned" in types and "unassigned_task" in types and "overdue_task" in types
-    assert risks["summary_source"] == "rule"  # LLM 未配置走规则回退
+    assert "critical_unassigned" in types and "unassigned_task" not in types and "overdue_task" in types
+    high_load = next(item for item in risks["risks"] if item["type"] == "high_member_load")
+    assert high_load["weighted_load"] == 0.87 and high_load["load_level"] == "normal"
+    assert risks["summary_source"] == "rule"
+    assert risks["llm_status"] == "not_configured" and risks["llm_error"] is None
     assert risks["summary"]
-    # summarize=0 跳过 LLM 总结
+
+
+def test_d2_risk_llm_failure_is_observable_and_redacted(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "d2-llm.db")
+    secret = "sk-d2-secret-must-not-leak"
+    monkeypatch.setenv("LLM_API_KEY", secret)
+    api.init_db()
+    owner = _client()
+    _account(owner, "风险组长", "risk-owner@example.com")
+    pid = owner.post("/api/projects", json={"name": "D2 风险诊断项目"}).json()["id"]
+    owner.post(f"/api/projects/{pid}/tasks", json={"title": "普通未分配任务"})
+    calls = []
+
+    def failing_llm(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise RuntimeError(f"Authorization: Bearer {secret}; provider timeout")
+
+    monkeypatch.setattr(analytics, "llm_json", failing_llm)
     no_summary = owner.get(f"/api/projects/{pid}/risks", params={"summarize": 0}).json()
-    assert "summary" not in no_summary
+    assert "summary" not in no_summary and calls == []
+
+    payload = owner.get(f"/api/projects/{pid}/risks").json()
+    assert payload["summary_source"] == "rule" and payload["llm_status"] == "failed"
+    assert calls and payload["llm_error"]
+    assert secret not in payload["llm_error"] and "[REDACTED]" in payload["llm_error"]
 
