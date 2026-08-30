@@ -60,19 +60,22 @@
 - [x] 规则/mock 已验证多步、未知工具、非法 JSON、fallback；真实 provider 故障矩阵留 D7。
 - [x] 后端 citations 已含任务/风险/成员/周报真实 ID；点击式浏览器与 390px 留 D7。
 
-## D5 外部平台接入
+## D5 外部平台接入（代码与本地链路已整改，实网外部阻塞）
 
-- [x] 产品范围纳入 Webhook、GitHub 反向创建 Issue/PR；均为用户可选开关，不能静默写入。
-- [ ] 抽象统一 adapter：platforms/connections/oauth/project integrations/events/sync。
-- [ ] 使用 Fernet/AES-GCM 等真正加密 token；生产缺少密钥时拒绝启动；支持失效/轮换。
-- [ ] state 落库、绑定 user/session、TTL、一次性消费，重启不丢且防 CSRF。
-- [ ] GitHub 项目仓库绑定独立接口；同步权限 owner；配置不能由 member 越权修改。
-- [ ] Commit/PR 分页、since/cursor、部分成功、重试、stale running 恢复。
-- [ ] 断开保留历史 events/integration 去重语义，不因重连重复导入。
-- [ ] 补 Issue/Review/增删行统计；所有自动贡献 pending→owner confirm。
-- [ ] 按 adapter 接入飞书文档/日历/会议、腾讯文档/会议；至少完成一个文档/会议平台真实主路径。
-- [ ] 修复 GitHub 前端回调落地、source 徽标、owner 门控、`onReload`、`|| 1`。
-- [ ] 真实 OAuth→绑定→同步→pending→确认→去重→断开验收；不以 mock 代替。
+- [x] 产品范围纳入 Webhook、GitHub 反向创建 Issue/PR；均为用户显式可选功能，不能静默写入。
+- [x] 统一 adapter 与 platforms/connections/oauth/project integrations/events/sync/retry 接口。
+- [x] Fernet 真加密 token；生产缺少密钥时拒绝 OAuth；接口不返回凭据。
+- [x] state 落库，绑定 user + 精确 login session，TTL、一次性消费，重启不依赖内存。
+- [x] GitHub 项目仓库独立绑定；配置、同步、Webhook、反写均 owner 权限。
+- [x] Commit/PR/Issue/Review 分页、since 起点、逐仓库 partial、重试、stale running 恢复。
+- [x] 断开改为冻结：清 token、停用 integration、保留 events/contributions 和重连去重语义。
+- [x] 飞书/腾讯文档真实 HTTP adapter、连接、资源绑定、事件落库、pending 贡献链路。
+- [x] Webhook HMAC 校验、delivery 去重和显式注册；GitHub Issue/PR 显式反向写入且只允许已绑定仓库。
+- [x] 修复前端回调、source 徽标、owner 门控、`onReload`、`|| 1`，并增加多平台/反写 UI。
+- [ ] **外部阻塞**：真实 GitHub OAuth→绑定→同步→pending→确认→去重→Webhook→反写→断开/重连。
+- [ ] **外部阻塞**：真实飞书 OAuth/Wiki/Docx 与腾讯文档开放 API 主路径。
+- [ ] GitHub `additions/deletions` 仍为 0；如必须展示真实 diff 统计，需增加逐 commit 请求和速率预算。
+- [ ] D7：compose 透传 D5 环境变量、容器重启、桌面/390px 浏览器验收。
 
 ## D6 长期画像与跨项目协作
 

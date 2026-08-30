@@ -1661,7 +1661,7 @@ DELETE /api/projects/{project_id}/agent/sessions/{session_id}
 
 平台接入采用统一适配层。GitHub、飞书、腾讯文档、会议系统等具体平台都通过相同的连接、授权、项目绑定、同步和事件模型接入。
 
-> 实现状态（2026-08-28）：GitHub 已实现（OAuth 授权/回调/断开、项目同步/去重、token 后端混淆存储），对应 `backend/routers/integrations.py` 与前端接入组件；飞书 / 腾讯文档 / 会议系统等其余平台仍为 TODO，前端仅预留平台列表。
+> 实现状态（2026-08-30）：已实现统一平台目录、用户连接、项目绑定、同步、事件与重试接口；GitHub 覆盖 OAuth、Commit/PR/Issue/Review、Webhook、统计和显式创建 Issue/PR；飞书与腾讯文档已有真实 HTTP adapter、连接/绑定/同步链路。token 使用 Fernet，OAuth state 持久化并绑定用户与登录 session。当前外部凭据为空，三平台实网验收均标记为外部阻塞；GitLab/Gitee/会议系统等仍未实现。
 
 支持的 `platform` 值：
 
@@ -1775,6 +1775,8 @@ POST /api/integrations/{platform}/connections
 
 返回平台连接对象。
 
+对于当前不提供 OAuth 的腾讯文档账号，可由前端密码框显式提交 `access_token`、`external_account_id`、`external_username`；令牌只在本次 HTTPS 请求中传输并立即加密落库，后续接口不回显。未配置官方 `TENCENT_DOC_API_BASE` 时拒绝建立可用主路径。
+
 #### 删除平台连接
 
 ```http
@@ -1860,6 +1862,14 @@ POST /api/projects/{project_id}/integrations/{integration_id}/sync
   "status": "running"
 }
 ```
+
+失败或部分成功任务可由 owner 显式重试：
+
+```http
+POST /api/projects/{project_id}/integrations/{integration_id}/retry
+```
+
+服务启动后发现超过 30 分钟仍为 `running` 的任务，会标记为 `failed` 并允许重试；不得静默标记成功。
 
 #### 获取平台外部事件
 
@@ -2087,7 +2097,27 @@ DELETE /api/github/connections/current
 
 成功响应：`204 No Content`
 
-解绑后删除或失效化 access token；历史统计可以保留，但不能再继续同步。
+解绑后删除或失效化 access token；历史统计可以保留，但不能再继续同步。默认行为为冻结：清空 token、停用集成、保留事件和贡献，重连后继续沿用原去重语义。
+
+### 10.9 注册与接收 GitHub Webhook
+
+```http
+POST /api/projects/{project_id}/integrations/{integration_id}/github/webhook
+POST /api/integrations/github/webhook/{integration_id}
+```
+
+第一条仅 owner 可显式调用；第二条由 GitHub 调用，必须验证 `X-Hub-Signature-256`，使用 `X-GitHub-Delivery` 去重。Webhook 不得绕过 pending→owner confirm。
+
+### 10.10 显式反向创建 GitHub Issue / Pull Request
+
+```http
+POST /api/projects/{project_id}/github/issues
+POST /api/projects/{project_id}/github/pulls
+```
+
+权限：`owner`。只能写入当前项目已绑定的仓库。前端必须显示独立表单和“确认创建”按钮；Agent、同步任务和后台定时任务均不得静默触发。
+
+Issue 请求字段：`repository`、`title`、`body`、可选 `labels`。PR 请求字段：`repository`、`title`、`head`、`base`、可选 `body`。
 
 ---
 

@@ -193,8 +193,9 @@ agent_memory = table("agent_memory",
 
 platform_connections = table("platform_connections",
     Column("id", Integer, primary_key=True), Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-    Column("platform", String(50), nullable=False), Column("external_account_id", String(255)), Column("credentials_ref", Text),
-    Column("status", String(30), nullable=False, server_default=text("'active'")), Column("created_at", String(40), nullable=False), Column("updated_at", String(40), nullable=False))
+    Column("platform", String(50), nullable=False), Column("external_account_id", String(255)), Column("external_username", String(255)), Column("credentials_ref", Text),
+    Column("scopes", Text, nullable=False, server_default=text("'[]'")), Column("status", String(30), nullable=False, server_default=text("'active'")),
+    Column("connected_at", String(40)), Column("last_synced_at", String(40)), Column("created_at", String(40), nullable=False), Column("updated_at", String(40), nullable=False))
 
 project_integrations = table("project_integrations",
     Column("id", Integer, primary_key=True), Column("project_id", ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
@@ -246,6 +247,11 @@ weekly_reports = table("weekly_reports",
     Column("llm_error", Text), Column("created_by", ForeignKey("users.id", ondelete="SET NULL")),
     Column("created_at", String(40), nullable=False), Column("updated_at", String(40)),
     UniqueConstraint("project_id", "period_start", "period_end", name="uq_weekly_reports_project_period"))
+
+oauth_states = table("oauth_states",
+    Column("state", String(255), primary_key=True), Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("platform", String(50), nullable=False), Column("session_hash", String(64), nullable=False), Column("redirect_uri", Text), Column("expires_at", String(40), nullable=False),
+    Column("created_at", String(40), nullable=False), Column("consumed_at", String(40)))
 
 profile_authorizations = table("profile_authorizations",
     Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),

@@ -47,3 +47,18 @@
 .profile-metric span{font-size:11px;color:#738097}
 .profile-error{color:#d96169;padding:12px 0}
 @media(max-width:1250px){.profile-grid{grid-template-columns:1fr}}
+/* D5 外部平台接入 */
+.integration-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}
+.integration-card{display:flex;flex-direction:column;align-items:flex-start;gap:7px;padding:12px;border:1px solid var(--line);border-radius:8px;background:#fafbfe}
+.integration-card p{margin:0;color:#6d7b91;font-size:10px;line-height:1.55}
+.integration-details{margin-top:10px;border-top:1px solid #edf0f4;padding-top:10px}
+.integration-details summary{cursor:pointer;color:#4e6491;font-size:11px;font-weight:700}
+.integration-form-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.integration-form-row input,.integration-form-row select{flex:1;min-width:150px;height:34px;border:1px solid var(--line);border-radius:7px;background:#fff;padding:0 9px;color:#53647c;font-size:10px}
+.integration-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;padding:8px 10px;border-radius:7px;background:#f6f8fc;font-size:10px}
+.integration-write-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+.integration-write-grid>div{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--line);border-radius:8px}
+.integration-write-grid input,.integration-write-grid textarea{width:100%;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px;color:#53647c;font-size:10px}
+.integration-write-grid textarea{min-height:70px;resize:vertical}
+@media(max-width:900px){.integration-grid{grid-template-columns:1fr}.integration-write-grid{grid-template-columns:1fr}}
+@media(max-width:520px){.integration-form-row{align-items:stretch;flex-direction:column}.integration-form-row input,.integration-form-row select,.integration-form-row button{width:100%;min-width:0}.integration-row{align-items:flex-start;flex-direction:column}}

@@ -13,7 +13,7 @@ def test_complete_sqlalchemy_metadata_compiles_for_postgresql():
         lambda sql, *args, **kwargs: statements.append(str(sql.compile(dialect=engine.dialect))),
     )
     Base.metadata.create_all(engine)
-    assert len(Base.metadata.tables) == 29
+    assert len(Base.metadata.tables) == 30
     assert {"audit_logs", "platform_connections", "agent_sessions", "recommendations", "recommendation_events", "weekly_reports"} <= set(Base.metadata.tables)
     assert statements
 
@@ -28,7 +28,7 @@ def test_sqlalchemy_session_and_schema_status_on_sqlite(tmp_path, monkeypatch):
     with db.session_scope(database) as session:
         assert session.scalar(select(User.name).where(User.email == "sa@example.com")) == "SQLAlchemy"
     status = db.schema_status(database)
-    assert status["dialect"] == "sqlite" and len(status["tables"]) == 29
+    assert status["dialect"] == "sqlite" and len(status["tables"]) == 30
 
 
 def test_postgresql_compat_sql_translation():
@@ -47,6 +47,8 @@ def test_postgresql_initialize_adds_new_columns_to_existing_schema(monkeypatch):
                 "tasks": {"id"},
                 "project_invitations": {"id"},
                 "task_review_history": {"id", "created_at"},
+                "platform_connections": {"id", "external_account_id", "credentials_ref", "status", "created_at", "updated_at"},
+                "oauth_states": {"state", "user_id", "platform", "redirect_uri", "expires_at", "created_at", "consumed_at"},
             }[table]]
 
     executed = []
@@ -72,6 +74,8 @@ def test_postgresql_initialize_adds_new_columns_to_existing_schema(monkeypatch):
     assert any('ALTER TABLE "tasks" ADD COLUMN "reviewer_id" INTEGER' in statement for statement in executed)
     assert any('ALTER TABLE "project_invitations" ADD COLUMN "is_mentor" INTEGER NOT NULL DEFAULT 0' in statement for statement in executed)
     assert any('ALTER TABLE "task_review_history" ADD COLUMN "updated_at" VARCHAR(40)' in statement for statement in executed)
+    assert any('ALTER TABLE "platform_connections" ADD COLUMN "external_username" VARCHAR(255)' in statement for statement in executed)
+    assert any('ALTER TABLE "oauth_states" ADD COLUMN "session_hash" VARCHAR(64)' in statement for statement in executed)
 
 
 def test_compat_connection_insert_select_and_lastrowid(tmp_path):

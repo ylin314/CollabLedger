@@ -1,101 +1,172 @@
-# D5 外部平台接入（GitHub） - 深化方案
+# D5 外部平台接入深化方案
 
-> 面向开发会话（session / goal）的可执行方案文档。目标：让成员把真实 GitHub 提交/PR 一键导入「贡献账本」，由手动记账升级为「外部事实 + 人工确认」。只实现 GitHub 一项；飞书 / 腾讯文档接入仅记录 TODO，不实现。
-> 状态：已与负责人确认决策（见「决策记录」）。执行顺序：D5 → D6 → D7，本文件第一个执行。
+> 更新日期：2026-08-30。用户已撤销旧版“只做 GitHub、Webhook/反向写入/飞书/腾讯文档不做”的范围限制。本版以 API 契约为对外标准，完整纳入 GitHub、Webhook、显式反向写入、飞书与腾讯文档；外部凭据不足只影响实网验收，不允许以静态 JSON 或假成功代替。
 
-## 1. 现状对照
+## 1. 产品决策
 
-### 1.1 文档要求（团队分工 3.8 贡献系统、产品路线图阶段三）
-- 手动贡献 + 外部平台接入；手动贡献 / 确认 / 争议已有，GitHub 等接入未做（README 阶段三 TODO）。
+| 决策项 | 最终口径 |
+|---|---|
+| 平台范围 | GitHub、飞书、腾讯文档均进入 D5；后续平台通过同一适配器扩展 |
+| 数据方向 | 外部平台 → CollabLedger 为主；GitHub Issue/PR 允许用户显式确认后反向写入 |
+| 实时性 | 手动同步为可控主路径；GitHub Webhook 为用户可选实时增强 |
+| 贡献状态 | 所有外部事件先写 `external_events`，再生成 `pending` 贡献，必须由 owner 确认 |
+| 权限 | 个人平台连接归用户；项目绑定、同步、Webhook 注册、反向写入仅 owner |
+| 断开 | 默认冻结：清空 token、停用项目集成、保留事件与贡献；不因重连破坏去重 |
+| 凭据 | Fernet 加密，生产无 `GITHUB_TOKEN_SECRET` 时拒绝授权；接口永不返回 token |
+| OAuth state | 数据库持久化，绑定用户和具体登录 session，10 分钟 TTL，一次消费 |
 
-### 1.2 当前实现（backend/routers/contributions.py + backend/models.py）
-| 能力 | 现状 |
-| --- | --- |
-| 贡献记录 | `contributions` 表：kind / title / description / quantity / metadata / evidence_url / status(pending/confirmed/disputed) / source(manual) / occurred_at |
-| 平台连接 | `platform_connections`（user_id/platform/external_account_id/credentials_ref/status）、`project_integrations`（project/connection/config/enabled）已存在 |
-| 事件去重 | `external_events`（integration_id + external_id 唯一约束）已存在 |
-| 同步任务 | `sync_jobs`（integration、status、cursor、error）已存在 |
+## 2. 架构
 
-### 1.3 差距结论
-- 无任何外部平台接入：贡献全部来自手动填写。
-- 已建好的平台连接 / 事件去重 / 同步任务三张表尚未被使用（P0 基建空置）。
-
-## 2. 决策记录（已确认）
-| 项 | 决策 |
-| --- | --- |
-| 技术方案 | GitHub OAuth App（非 PAT 极简版）✅ |
-| 接入范围 | 只做 GitHub 一项；飞书 / 腾讯文档在 README + 本文档中记 TODO，不实现 ✅ |
-| 同步方向 | 单向 GitHub → 账本（导入为贡献）；不反向写 GitHub（建 issue/PR 不做）✅ |
-| 同步触发 | 手动触发（连接后点「同步」）；Webhook 实时同步列为 backlog，不实现 ✅ |
-| 数据落点 | contribution status=pending，source=github，owner 确认后 confirmed；复用现有 4 张平台表，不建新表 ✅ |
-| Token 存储 | OAuth token 加密后仅存后端 `credentials_ref`，任何接口不返回明文 token ✅ |
-| 反向写入 | 本轮不做（TODO 记录） |
-| OAuth scope | 只读最小 scope：`repo`（含 public+private 读提交）或 `public_repo`；实施时按需求取最小集 |
-
-## 3. 深化设计
-
-### 3.1 总体流程
 ```text
-前端「连接 GitHub」→ GET /api/integrations/github/auth-url（生成 state 存会话）
-→ 跳转 GitHub 授权页（回调 redirect_uri=http://127.0.0.1:8000/api/integrations/github/callback）
-→ 回调换 code → POST token 获取 access_token → 存入 platform_connections.credentials_ref（加密）
-→ 项目设置页「同步提交/PR」→ POST /api/projects/{id}/integrations/github/sync
-→ 拉取 commits/PRs → 逐条写 external_events（去重）→ 生成 contribution(pending, source=github, evidence_url=commit/PR 链接)
-→ 组长在贡献账本确认 → 状态 confirmed
+平台目录 / 用户连接 / 项目绑定
+        ↓
+backend/services/platform_adapters.py
+  ├─ FeishuAdapter：真实 OAuth + wiki/docx HTTP API
+  └─ TencentDocAdapter：真实开放 API 基址 + 资源路径
+        ↓
+backend/routers/integration_platforms.py
+  ├─ 统一 OAuth / connection / integration / sync / events
+  ├─ GitHub 契约兼容别名、统计、Webhook
+  └─ GitHub Issue/PR 显式反向写入
+        ↓
+external_events（唯一键去重） → contributions(source=平台,status=pending)
 ```
 
-### 3.2 后端接口（backend/routers/integrations.py，新建）
-| 方法/路径 | 说明 |
-| --- | --- |
-| GET `/api/integrations/github/auth-url` | 返回 GitHub 授权跳转 URL（含 state），state 存会话/临时表防 CSRF |
-| GET `/api/integrations/github/callback` | OAuth 回调：换 token、存连接、跳回前端 |
-| POST `/api/integrations/github/disconnect` | 断开连接（删 token） |
-| GET `/api/projects/{id}/integrations/github/status` | 返回连接状态、最近同步时间、同步计数 |
-| POST `/api/projects/{id}/integrations/github/sync` | 同步贡献：拉 commits + PRs → 去重写 external_events → 生成 contributions |
-| GET `/api/projects/{id}/contributions?source=github` | 复用现有接口按来源过滤 |
+GitHub 既有同步主链保留在 `backend/routers/integrations.py`，通用平台和扩展能力拆到独立路由，避免一个路由文件继续膨胀。
 
-- 配置统一从 `.env` 读取：`GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_REDIRECT_URI`（本地 `http://127.0.0.1:8000/api/integrations/github/callback`，生产走 `COLLAB_DOMAIN`）。
-- 未配置 `GITHUB_CLIENT_ID` 时，接口返回明确提示「未配置 GitHub 接入」，前端隐藏/禁用连接按钮。
+## 3. 数据模型
 
-### 3.3 同步与去重规则
-- 拉取范围：该用户可访问的仓库（`GET /user/repos`），或项目配置的仓库列表（`project_integrations.config` 存仓库名）。
-- 事件粒度：commit（author=该成员）与 PR（author=该成员或 merged 由该成员合并）。
-- 去重：`external_events.integration_id + external_id` 唯一约束，insert ignore；重复同步不产生重复贡献。
-- 生成贡献：
-  - kind=code，title=`提交：{repo}/#{sha[:7]} {msg 前 60 字}` 或 `PR：{repo}#{number} {title}`；
-  - description=`由 GitHub 自动同步 · {repo} · {时间}`；
-  - evidence_url=对应 commit/PR 的 URL；
-  - quantity=1；status=pending；source=github；occurred_at=commit/PR 时间。
-- 失败处理：GitHub API 调用失败写 `sync_jobs.error`，接口返回可读错误；不中断已成功的部分导入。
+### 3.1 `oauth_states`
 
-### 3.4 前端（frontend/src/main.jsx）
-- 贡献账本页或成员管理页增加「GitHub 接入」区域：
-  - 未连接：显示「连接 GitHub」按钮（点击跳 OAuth）。
-  - 已连接：显示已连接账号 + 「同步」「断开」按钮 + 最近同步时间。
-  - 同步结果 toasts：`已导入 N 条新提交/PR`。
-- 贡献列表增加 `source` 徽标（手动 / GitHub）；GitHub 导入项右上角来源角标 + evidence 链接可点开。
+- `state`：随机一次性标识；
+- `user_id`：绑定用户；
+- `session_hash`：绑定发起 OAuth 的具体登录会话；
+- `platform`、`redirect_uri`、`expires_at`、`consumed_at`；
+- 服务重启后仍可校验，跨用户/跨 session/重放均拒绝。
 
-### 3.5 安全
-- `client_secret` 只在后端使用，绝不出现在前端或接口返回。
-- `state` 参数防 CSRF：生成随机 state，回调时校验，失败拒绝。
-- token 加密（或至少 base64 + 服务端隔离）存 `credentials_ref`，断开连接即删除。
-- 所有第三方接口调用限流 + 超时，避免阻塞主线程。
-- 接口鉴权沿用现有 `ensure_project_access`。
+### 3.2 `platform_connections`
 
-## 4. 测试
-- `backend/test/test_integrations_github.py`（mock GitHub API，不依赖真实网络）：
-  - auth-url 生成含 state、callback state 校验失败返回 400
-  - 同步：mock commits/PRs → 生成 contributions（source=github、evidence_url 正确）
-  - 去重：同一 SHA/PR 同步两次不重复
-  - 权限：非成员/非 owner 访问同步接口返回 403
-  - 失败：GitHub API 报错 → sync_jobs.error、接口可读错误
-- 不配置 `GITHUB_CLIENT_ID` 时：连接按钮/接口提示未配置，不抛 500。
+在兼容旧库的前提下补充：
 
-## 5. 验收标准
-- [ ] `platform_connections` 新增一条 GitHub OAuth 连接，token 保存在后端
-- [ ] 手动同步后贡献账本出现 source=github 的 pending 贡献，evidence_url 指向真实 commit/PR
-- [ ] 同一事件重复同步不重复记录
-- [ ] affiliate 前端连接 / 同步 / 断开全流程可用
-- [ ] `pytest backend/` 全绿（含新增 test_integrations_github.py）；Don't break 既有 36 用例
-- [ ] `cd frontend && npm run build` 通过
-- [ ] README 阶段三 TODO 更新：GitHub 已接入，飞书 / 腾讯文档仍为未实现
+- `external_username`；
+- `scopes`；
+- `connected_at`；
+- `last_synced_at`。
+
+`credentials_ref` 只保存 Fernet 密文。断开时状态改为 `revoked`、清空密文，不删除连接记录。
+
+### 3.3 既有事件与任务表
+
+- `project_integrations.config` 保存资源类型、资源 ID、资源 URL、同步起点和最后同步时间；
+- `external_events(integration_id, external_id)` 唯一约束承担跨重启去重；
+- `sync_jobs` 记录 `running/success/partial/failed`；30 分钟以上遗留 `running` 自动标记失败并允许重试。
+
+## 4. 对外接口
+
+### 4.1 通用接口
+
+- `GET /api/integrations/platforms`
+- `GET /api/integrations/connections`
+- `POST /api/integrations/{platform}/oauth/start`
+- `POST /api/integrations/{platform}/connections`
+- `DELETE /api/integrations/connections/{connection_id}`
+- `GET /api/projects/{project_id}/integrations`
+- `POST /api/projects/{project_id}/integrations`
+- `POST /api/projects/{project_id}/integrations/{integration_id}/sync`
+- `POST /api/projects/{project_id}/integrations/{integration_id}/retry`
+- `GET /api/projects/{project_id}/integrations/{integration_id}/events`
+
+### 4.2 GitHub 兼容接口
+
+保留既有 `/api/integrations/github/*`，并实现契约别名：
+
+- `/api/github/status`
+- `/api/github/oauth/start`
+- `/api/github/oauth/callback`
+- `/api/github/connections`
+- `/api/github/connections/current`
+- `/api/projects/{project_id}/github/repositories`
+- `/api/projects/{project_id}/github/sync`
+- `/api/projects/{project_id}/github/statistics`
+
+GitHub 同步覆盖 Commit、PR、Issue、Review；列表接口按页读取，使用 `sync_from/last_synced_at/since` 做增量起点；每个仓库独立提交，单仓库失败不回滚其他仓库。
+
+### 4.3 Webhook 与反向写入
+
+- `POST /api/projects/{project_id}/integrations/{integration_id}/github/webhook`：用户显式注册；
+- `POST /api/integrations/github/webhook/{integration_id}`：校验 `X-Hub-Signature-256`，按 delivery 去重；
+- `POST /api/projects/{project_id}/github/issues`；
+- `POST /api/projects/{project_id}/github/pulls`。
+
+反向写入只能针对当前项目已绑定仓库，且必须由 owner 点击确认，不允许由 Agent 或后台任务静默触发。
+
+## 5. 平台适配
+
+### 5.1 GitHub
+
+OAuth 取得用户 token；同步 Commit/PR/Issue/Review；Webhook 实时事件；显式创建 Issue/PR。所有自动贡献均为 `source=github,status=pending`。
+
+### 5.2 飞书
+
+- 使用 `FEISHU_APP_ID/FEISHU_APP_SECRET` 发起用户 OAuth；
+- 通过飞书开放平台换取 user access token；
+- `wiki_space` 调用 Wiki 节点接口，`document` 调用 Docx 文档接口；
+- 标准化为 `document_updated` 事件与 `source=feishu` 的 pending 文档贡献；
+- 无凭据时 UI 明确显示“需要外部配置”，不返回假数据。
+
+### 5.3 腾讯文档
+
+- 使用已开通开放平台提供的 access token；
+- `TENCENT_DOC_API_BASE` 和项目 `api_path/resource_id` 决定真实请求；
+- 标准化为 `source=tencent_doc` 的 pending 文档贡献；
+- 因当前 `.env` 未提供腾讯文档开放平台凭据，本地只能验证完整持久化链路，实网主路径标记为外部阻塞。
+
+## 6. 前端交互
+
+贡献账本页提供：
+
+1. 平台目录、连接状态和“需要外部配置”状态；
+2. GitHub OAuth、仓库同步、Webhook 注册；
+3. 飞书 OAuth；
+4. 腾讯文档令牌连接（密码框，提交后清空，不回显）；
+5. 文档资源绑定与显式同步；
+6. GitHub Issue/PR 显式创建表单；
+7. 贡献来源徽标；
+8. owner 门控，移除 `owner_id || 1` 等硬编码。
+
+桌面和 390px 采用响应式单列布局，最终浏览器验收归 D7 统一执行。
+
+## 7. 安全与失败路径
+
+- OAuth state：用户 + session + TTL + 一次消费；
+- token：Fernet 密文，生产密钥缺失即拒绝；
+- Webhook：HMAC-SHA256 常量时间比较；
+- 外部错误：只返回平台和 HTTP 状态，不泄露 token、响应体或底层异常；
+- 项目权限：绑定/同步/Webhook/反写均 owner；
+- 仓库隔离：反写只允许已绑定仓库；
+- 部分成功：返回 `partial` 和逐仓库脱敏错误；
+- 断开：冻结保留历史；
+- 无配置：显式 `NOT_CONFIGURED`，前端不静默隐藏。
+
+## 8. 验收与当前状态
+
+### 8.1 已通过的本地真实链路
+
+- OAuth state 落库、跨内存重置、跨用户/跨 session 拒绝、一次消费；
+- Fernet 密文、错误密钥无法解密、生产缺密钥拒绝；
+- owner 权限、分页参数、去重、partial、失败任务、软断开；
+- 通用平台连接→绑定→adapter→事件落库→pending 贡献→重复同步去重；
+- Webhook 正确签名、错误签名、delivery 去重；
+- GitHub Issue/PR 显式反向写入调用；
+- 前端 typecheck、测试和生产 build。
+
+### 8.2 外部阻塞
+
+2026-08-30 对本地 `.env` 只做“是否配置”检查（未读取/输出值）：GitHub OAuth、Webhook、飞书、腾讯文档所需变量均为空。因此不能宣称真实外网 OAuth/同步/Webhook 已跑通。待凭据可用时按以下顺序验收：
+
+```text
+连接 → 回调 → 项目绑定 → 同步 → external_events → pending contribution
+→ owner confirm → 重复同步去重 → Webhook → 显式反向写入 → 断开 → 重连
+```
+
+外部资源未提供前，代码保持明确阻塞，不启用 mock/fallback 冒充主路径。
