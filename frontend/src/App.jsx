@@ -583,6 +583,7 @@ function App() {
                   project={project}
                   members={members}
                   canWrite={canWrite}
+                  currentUserId={auth?.id}
                   onRecommend={setRecommendTask}
                   onToast={setToast}
                   setProject={setProject}
@@ -689,6 +690,7 @@ function App() {
           onClose={() => setRecommendTask(null)}
           onToast={setToast}
           setProject={setProject}
+          currentUserId={auth?.id}
         />
       )}{" "}
       {reviewTask && (
