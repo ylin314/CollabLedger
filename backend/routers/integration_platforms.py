@@ -393,16 +393,31 @@ def github_statistics(
         f"SELECT c.user_id,u.name,COUNT(*) total,SUM(CASE WHEN c.title LIKE '提交：%' THEN 1 ELSE 0 END) commits,SUM(CASE WHEN c.title LIKE 'PR：%' THEN 1 ELSE 0 END) pull_requests,SUM(CASE WHEN c.title LIKE 'Issue：%' THEN 1 ELSE 0 END) issues,SUM(CASE WHEN c.title LIKE 'Review：%' THEN 1 ELSE 0 END) reviews FROM contributions c JOIN users u ON u.id=c.user_id WHERE {' AND '.join(where)} GROUP BY c.user_id,u.name ORDER BY c.user_id",
         args,
     ).fetchall()
+    where.append("c.title LIKE '提交：%'")
     members = []
     for row in rows:
         connection = conn.execute("SELECT external_username FROM platform_connections WHERE user_id=? AND platform='github' ORDER BY id DESC LIMIT 1", (row["user_id"],)).fetchone()
+        additions = deletions = 0
+        for meta_row in conn.execute(
+            f"SELECT c.metadata FROM contributions c WHERE {' AND '.join(where)} AND c.user_id=?",
+            (*args, row["user_id"]),
+        ).fetchall():
+            try:
+                gh_meta = (json.loads(meta_row["metadata"] or "{}") or {}).get("github") or {}
+            except (json.JSONDecodeError, TypeError):
+                continue
+            additions += int(gh_meta.get("additions") or 0)
+            deletions += int(gh_meta.get("deletions") or 0)
         members.append({
             "user_id": int(row["user_id"]), "name": row["name"], "github_username": connection["external_username"] if connection else None,
-            "commits": int(row["commits"] or 0), "additions": 0, "deletions": 0,
+            "commits": int(row["commits"] or 0), "additions": additions, "deletions": deletions,
             "pull_requests": int(row["pull_requests"] or 0), "reviews": int(row["reviews"] or 0), "issues": int(row["issues"] or 0),
         })
     conn.close()
-    return {"project_id": project_id, "members": members, "repository_id": repository_id}
+    return {
+        "project_id": project_id, "members": members, "repository_id": repository_id,
+        "calculation": "增删行来自 GitHub commit 详情接口，仅统计同步时成功拉取详情的新 commit（单次同步上限 100 条），其余为 0",
+    }
 
 
 def _github_write(project_id: int, repo: str, endpoint: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:

@@ -39,10 +39,13 @@ def _fake_github(monkeypatch, *, commits=None, pulls=None, issues=None, reviews=
 
     def fake_get(url, headers=None, params=None, **kwargs):
         should_fail = fail or any(f"/repos/{repo}/" in url for repo in fail_repos)
-        if should_fail and (url.endswith("/commits") or url.endswith("/pulls") or url.endswith("/issues") or url.endswith("/reviews")):
+        if should_fail and (url.endswith("/commits") or "/commits/" in url or url.endswith("/pulls") or url.endswith("/issues") or url.endswith("/reviews")):
             raise httpx.ConnectError("network down")
         if url.endswith("/user"):
             return httpx.Response(200, json={"id": 900001, "login": "rxc-test"}, request=httpx.Request("GET", url))
+        if "/commits/" in url:
+            sha = url.rsplit("/", 1)[-1]
+            return httpx.Response(200, json={"sha": sha, "stats": {"additions": 12, "deletions": 3}}, request=httpx.Request("GET", url))
         if url.endswith("/commits"):
             return httpx.Response(200, json=commits if commits is not None else [], request=httpx.Request("GET", url))
         if url.endswith("/pulls"):
@@ -302,3 +305,28 @@ def test_oauth_state_is_bound_to_exact_login_session(monkeypatch, tmp_path):
     assert "invalid_state" in wrong_session.headers["location"]
     correct_session = first.get("/api/integrations/github/callback", params={"code": "abc", "state": state})
     assert "connected=rxc-test" in correct_session.headers["location"]
+
+
+def test_sync_collects_real_diff_statistics(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "diff-stats.db")
+    _fake_github(monkeypatch, commits=_COMMIT, pulls=_PULL)
+    owner = _client(); owner_user = _account(owner, "组长", "diff-owner@example.com")
+    pid = _project(owner)
+    state = owner.get("/api/integrations/github/auth-url").json()
+    owner.get("/api/integrations/github/callback", params={"code": "abc", "state": state["state"]})
+
+    config = {"repos": ["demo/repo"], "logins": {"rxc-test": owner_user["id"]}}
+    first = owner.post(f"/api/projects/{pid}/integrations/github/sync", json={"config": config}).json()
+    assert first["diff_details"] == 1 and first["diff_detail_limit"] >= 1
+
+    stats = owner.get(f"/api/projects/{pid}/github/statistics").json()
+    member = next(m for m in stats["members"] if m["user_id"] == owner_user["id"])
+    assert member["commits"] == 1 and member["additions"] == 12 and member["deletions"] == 3
+    assert member["pull_requests"] == 1 and member["issues"] == 0
+
+    # 去重同步不重复请求 diff 详情，统计保持稳定
+    second = owner.post(f"/api/projects/{pid}/integrations/github/sync", json={"config": config}).json()
+    assert second["created"] == 0 and second["diff_details"] == 0
+    stats_again = owner.get(f"/api/projects/{pid}/github/statistics").json()
+    member_again = next(m for m in stats_again["members"] if m["user_id"] == owner_user["id"])
+    assert member_again["additions"] == 12 and member_again["deletions"] == 3

@@ -31,6 +31,8 @@ GITHUB_API = "https://api.github.com"
 GITHUB_OAUTH = "https://github.com/login/oauth"
 STATE_TTL_SECONDS = 600
 HTTP_TIMEOUT = 15.0
+# 单次同步最多为多少条新 commit 请求 diff 统计；超过则跳过，避免首次全量同步耗尽 API 配额。
+DIFF_DETAIL_LIMIT = 100
 FRONTEND_BASE = os.getenv("COLLAB_FRONTEND_BASE", "http://127.0.0.1:5173")
 
 def _now() -> str: return now_iso()
@@ -192,6 +194,17 @@ def _github_post(url: str, token: str, payload: dict[str, Any]) -> httpx.Respons
     )
 
 
+def _commit_diff_stats(token: str, repo: str, sha: str) -> Optional[tuple[int, int]]:
+    """请求单条 commit 详情获取增删行数；失败返回 None，不阻塞整体同步。"""
+    try:
+        response = _github_get(f"{GITHUB_API}/repos/{repo}/commits/{sha}", token)
+        response.raise_for_status()
+        stats = (response.json().get("stats") or {})
+        return int(stats.get("additions") or 0), int(stats.get("deletions") or 0)
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+
+
 def _safe_external_error(response: httpx.Response) -> str:
     return f"外部平台返回 HTTP {response.status_code}"
 
@@ -299,7 +312,8 @@ def _sync_repo(
     user_map: dict[str, int],
     since: Optional[str] = None,
 ) -> dict[str, int]:
-    stats = {"created": 0, "skipped": 0, "commits": 0, "pull_requests": 0, "issues": 0, "reviews": 0}
+    stats = {"created": 0, "skipped": 0, "commits": 0, "pull_requests": 0, "issues": 0, "reviews": 0, "diff_details": 0}
+    diff_details = 0
     commit_params: dict[str, Any] = {"per_page": 100}
     if since:
         commit_params["since"] = since
@@ -324,11 +338,21 @@ def _sync_repo(
         stats["commits"] += 1
         if target is None:
             continue
+        diff: Optional[tuple[int, int]] = None
+        if diff_details < DIFF_DETAIL_LIMIT:
+            diff = _commit_diff_stats(token, repo, sha)
+            if diff is not None:
+                diff_details += 1
+                stats["diff_details"] += 1
+        meta: dict[str, Any] = {"external_id": external_id, "sha": sha, "repo": repo, "author": actor}
+        if diff is not None:
+            meta["additions"] = diff[0]
+            meta["deletions"] = diff[1]
         if _ensure_contribution(conn, project_id, target, {
             "title": f"提交：{repo.split('/')[-1]}#{sha[:7]} {first_line}",
             "description": f"由 GitHub 自动同步 · {repo} · {occurred}",
             "evidence_url": evidence, "occurred_at": occurred,
-            "meta": {"external_id": external_id, "sha": sha, "repo": repo, "author": actor},
+            "meta": meta,
         }):
             stats["created"] += 1
 
@@ -545,6 +569,7 @@ def github_sync(project_id: int, payload: dict[str, Any], request: Request) -> d
     user_map.setdefault(str(connection["external_username"] or connection["external_account_id"]), int(user["id"]))
     created = skipped = 0
     event_statistics = {"commits": 0, "pull_requests": 0, "issues": 0, "reviews": 0}
+    diff_detail_total = 0
     errors: list[str] = []
     succeeded_repos = 0
     for repo in repos:
@@ -561,6 +586,7 @@ def github_sync(project_id: int, payload: dict[str, Any], request: Request) -> d
             conn.commit()
             created += stats["created"]
             skipped += stats["skipped"]
+            diff_detail_total += stats["diff_details"]
             for key in event_statistics:
                 event_statistics[key] += stats[key]
             succeeded_repos += 1
@@ -596,6 +622,8 @@ def github_sync(project_id: int, payload: dict[str, Any], request: Request) -> d
         "job_id": job_id,
         "status": "partial" if errors and (created or skipped or succeeded_repos) else ("failed" if errors else "success"),
         "statistics": event_statistics,
+        "diff_details": diff_detail_total,
+        "diff_detail_limit": DIFF_DETAIL_LIMIT,
         "errors": errors,
     }
     if errors and not (created or skipped or succeeded_repos):
