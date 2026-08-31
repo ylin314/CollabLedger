@@ -1404,15 +1404,15 @@ Query 参数：
 | `week_start` | date | 否 | 默认本周周一；格式非法返回 422；传入后按周一归一化 |
 | `start_date` | date | 否 | 兼容旧参数；与 `end_date` 同传时按周一归一化后视作 `week_start` |
 | `end_date` | date | 否 | 兼容旧参数 |
-| `refresh` | bool | 否 | `true` 时强制重新生成并覆盖该周期（不产生重复行） |
 | `format` | string | 否 | `json` 或 `markdown`，默认 `json` |
 
 行为：
 
-- 首次访问某周：基于真实数据实时生成（LLM 逐成员摘要 + 整体洞察）并落库 `weekly_reports`，返回 `stored=true`。
-- 再次访问同周：直接读库返回（除非 `refresh=true`）。
+- `GET` 只读查询已存在周报；首次访问尚未生成的周期返回 `exists=false`、`stored=false`，不会写入 `weekly_reports`。
+- `POST /api/projects/{project_id}/weekly-report` 是周报页面明确点击“生成/刷新”后使用的写接口，基于真实数据生成并幂等落库，返回 `stored=true`。
+- 再次 `GET` 同周期直接读库；再次 `POST` 同周期覆盖刷新但不产生重复行。
 - LLM 任一段失败或未配置：该段回退规则文本，整体 `source` 取 `llm | mixed | rule`，`llm_error` 记录失败原因但不阻塞接口。
-- 回看上周：传 `week_start=<上周周一>` 即可，未生成过则实时生成并落库。
+- 回看上周：`GET` 传 `week_start=<上周周一>` 只读取已存在记录；需要生成时由周报页面对同一路径发 `POST`。
 
 成功响应：`200 OK`
 
@@ -1431,8 +1431,15 @@ Query 参数：
     "tasks_in_progress": 5,
     "tasks_overdue": 1,
     "checkin_count": 12,
-    "contribution_count": 8,
-    "actual_hours": 26.5
+    "checkin_hours": 20.0,
+    "task_hours": 26.5,
+    "actual_hours": 20.0,
+    "hours_source": "member-wise_checkin_priority",
+    "contribution_count": 6,
+    "pending_contribution_count": 2,
+    "pending_count": 1,
+    "disputed_count": 1,
+    "pending_label": "待确认 2 项"
   },
   "highlights": ["完成登录鉴权模块", "完成数据库设计"],
   "risks": ["任务「接口联调」临近截止且尚未分配"],
@@ -1444,7 +1451,12 @@ Query 参数：
       "completed_tasks": 2,
       "active_tasks": 2,
       "checkin_count": 4,
+      "checkin_hours": 12.5,
+      "task_hours": 18.0,
       "actual_hours": 12.5,
+      "hours_source": "checkin",
+      "contribution_count": 2,
+      "pending_contribution_count": 1,
       "summary": "本周完成 2 项任务，累计工时 12.5 小时",
       "summary_source": "llm"
     }
@@ -1522,7 +1534,7 @@ GET /api/projects/{project_id}/report
 }
 ```
 
-默认只统计 `confirmed` 贡献，不生成成员排名。
+默认只统计 `confirmed` 贡献，不生成成员排名；`pending` 与 `disputed` 不进入主贡献数，合并单列为“待确认 X 项”。工时分列展示：有打卡时有效工时取打卡工时，没有打卡才取任务工时，二者绝不相加。
 
 ### 9.6 导出项目报告
 
@@ -1572,6 +1584,7 @@ POST /api/projects/{project_id}/agent/chat
   "answer": "当前项目最大的风险是任务「完成后端鉴权模块」已经延期，建议优先处理。",
   "source": "llm",
   "llm_error": null,
+  "memory_warning": null,
   "plan": [
     { "tool": "snapshot", "purpose": "读取任务、成员、风险和贡献事实" }
   ],
@@ -1609,11 +1622,13 @@ POST /api/projects/{project_id}/agent/chat
 - `tool_trace`：实际执行过的工具轨迹，含工具名、参数与成功/失败状态，供前端展示推理过程。
 - `citations`：从工具结果中提取的来源引用（任务 / 风险 / 成员 / 周报），可追溯到具体事实。
 - `facts`：本轮收集到的项目事实快照（脱敏，不含 API Key）。
-- `memory`：当前会话记忆（超过阈值后自动压缩为 `role=summary` 摘要，前插返回）。
+- `memory`：当前用户的会话记忆（超过阈值后自动压缩为 `role=summary` 摘要，前插返回）。
+- `memory_warning`：摘要压缩失败时的脱敏诊断信息；失败不会删除原消息。
+
 
 Agent 行为规则：
 
-- Agent 只能读取当前用户有权访问的项目，且只能调用白名单只读工具（`snapshot` / `recommend` / `task_detail` / `risk_detail` / `weekly_report` / `member_load`），不会出现未知工具调用。
+- Agent 只能读取当前用户有权访问的项目，且只能调用白名单只读工具（`snapshot` / `recommend` / `task_detail` / `risk_detail` / `weekly_report` / `member_load`），不会出现未知工具调用；`weekly_report` 只读已落库周报，不生成周报。
 - 回答必须基于项目事实（LLM 只能依据注入的 `facts` / `tool_trace`），不输出成员排名、人格评价或负面标签。
 - LLM 采用多步推理循环（ReAct 简化版），`AGENT_MAX_STEPS`（默认 4）控制最大轮数，超限或失败时自动规则兜底。
 - 长对话自动摘要压缩：`AGENT_SUMMARY_THRESHOLD`（默认 8）与 `AGENT_SUMMARY_LIMIT`（默认 8）控制，摘要失败时保留原消息不丢上下文。
@@ -1628,7 +1643,7 @@ GET /api/projects/{project_id}/agent/sessions
 
 成功响应：`200 OK`
 
-返回会话列表，包含 `session_id`、`last_message`、`message_count`、`updated_at`。
+返回当前用户自己的会话列表，包含 `session_id`、`last_message`、`message_count`、`updated_at`；同项目其他成员不可读取这些对话记录。
 
 ### 9.9 获取 Agent 会话消息
 
@@ -1670,7 +1685,7 @@ DELETE /api/projects/{project_id}/agent/sessions/{session_id}
 
 平台接入采用统一适配层。GitHub、飞书、腾讯文档、会议系统等具体平台都通过相同的连接、授权、项目绑定、同步和事件模型接入。
 
-> 实现状态（2026-08-28）：GitHub 已实现（OAuth 授权/回调/断开、项目同步/去重、token 后端混淆存储），对应 `backend/routers/integrations.py` 与前端接入组件；飞书 / 腾讯文档 / 会议系统等其余平台仍为 TODO，前端仅预留平台列表。
+> 实现状态（2026-08-30）：已实现统一平台目录、用户连接、项目绑定、同步、事件与重试接口；GitHub 覆盖 OAuth、Commit/PR/Issue/Review、Webhook、统计和显式创建 Issue/PR；飞书与腾讯文档已有真实 HTTP adapter、连接/绑定/同步链路。token 使用 Fernet，OAuth state 持久化并绑定用户与登录 session。当前外部凭据为空，三平台实网验收均标记为外部阻塞；GitLab/Gitee/会议系统等仍未实现。
 
 支持的 `platform` 值：
 
@@ -1784,6 +1799,8 @@ POST /api/integrations/{platform}/connections
 
 返回平台连接对象。
 
+对于当前不提供 OAuth 的腾讯文档账号，可由前端密码框显式提交 `access_token`、`external_account_id`、`external_username`；令牌只在本次 HTTPS 请求中传输并立即加密落库，后续接口不回显。未配置官方 `TENCENT_DOC_API_BASE` 时拒绝建立可用主路径。
+
 #### 删除平台连接
 
 ```http
@@ -1869,6 +1886,14 @@ POST /api/projects/{project_id}/integrations/{integration_id}/sync
   "status": "running"
 }
 ```
+
+失败或部分成功任务可由 owner 显式重试：
+
+```http
+POST /api/projects/{project_id}/integrations/{integration_id}/retry
+```
+
+服务启动后发现超过 30 分钟仍为 `running` 的任务，会标记为 `failed` 并允许重试；不得静默标记成功。
 
 #### 获取平台外部事件
 
@@ -2096,7 +2121,27 @@ DELETE /api/github/connections/current
 
 成功响应：`204 No Content`
 
-解绑后删除或失效化 access token；历史统计可以保留，但不能再继续同步。
+解绑后删除或失效化 access token；历史统计可以保留，但不能再继续同步。默认行为为冻结：清空 token、停用集成、保留事件和贡献，重连后继续沿用原去重语义。
+
+### 10.9 注册与接收 GitHub Webhook
+
+```http
+POST /api/projects/{project_id}/integrations/{integration_id}/github/webhook
+POST /api/integrations/github/webhook/{integration_id}
+```
+
+第一条仅 owner 可显式调用；第二条由 GitHub 调用，必须验证 `X-Hub-Signature-256`，使用 `X-GitHub-Delivery` 去重。Webhook 不得绕过 pending→owner confirm。
+
+### 10.10 显式反向创建 GitHub Issue / Pull Request
+
+```http
+POST /api/projects/{project_id}/github/issues
+POST /api/projects/{project_id}/github/pulls
+```
+
+权限：`owner`。只能写入当前项目已绑定的仓库。前端必须显示独立表单和“确认创建”按钮；Agent、同步任务和后台定时任务均不得静默触发。
+
+Issue 请求字段：`repository`、`title`、`body`、可选 `labels`。PR 请求字段：`repository`、`title`、`head`、`base`、可选 `body`。
 
 ---
 
@@ -2145,9 +2190,10 @@ GET /api/users/profile/{user_id}/history
 
 ```http
 GET /api/users/me/profile
+GET /api/users/{user_id}/profile
 ```
 
-权限：需要登录。
+权限：需要登录。本人可读取完整自身画像；读取他人时，双方必须仍在至少一个未删除项目中保持 active，且只聚合目标用户授权的来源项目。
 
 成功响应：`200 OK`
 
@@ -2156,31 +2202,56 @@ GET /api/users/me/profile
   "user_id": 1,
   "name": "张三",
   "project_count": 3,
+  "projects_count": 3,
   "completed_task_count": 42,
   "average_quality": 4.3,
+  "quality_samples": 38,
   "efficiency": 1.1,
+  "average_efficiency": 1.1,
+  "efficiency_samples": 30,
   "on_time_rate": 0.88,
+  "on_time_samples": 25,
   "top_skills": [
-    { "skill": "后端", "score": 88 },
-    { "skill": "Python", "score": 84 }
+    {
+      "skill": "后端开发",
+      "score": 88,
+      "sample_count": 12,
+      "source": "completed_and_assigned_tasks",
+      "cold_start": false
+    }
   ],
+  "skill_families": [],
+  "skill_strength": {},
   "collaboration_types": [
-    { "type": "code", "ratio": 0.55 },
-    { "type": "document", "ratio": 0.25 }
+    { "type": "code", "count": 36, "ratio": 0.55 }
   ],
+  "contributions_total": 65,
+  "active_months": 8,
+  "declared_skills": ["Python"],
   "data_sources": [
     { "source": "completed_tasks", "count": 42 },
     { "source": "confirmed_contributions", "count": 65 }
   ],
-  "generated_at": "2026-08-25T10:00:00Z"
+  "source_projects": [
+    { "project_id": 3, "project_name": "课程项目", "project_status": "archived", "membership_status": "left" }
+  ],
+  "calculation_notes": {
+    "skills": "历史技能分只使用真实任务命中、完成状态和质量；自报技能仅作冷启动标签",
+    "contributions": "只统计 confirmed 且未删除贡献，pending/disputed 不进入画像"
+  },
+  "generated_at": "2026-08-30T10:00:00Z",
+  "updated_at": "2026-08-30T10:00:00Z"
 }
 ```
 
 规则：
 
-- 画像只基于项目成果和已确认贡献
-- 不输出人格评价、道德评价或公开排名
-- 用户可查看数据来源和计算口径
+- 对外以 `project_count/completed_task_count/efficiency/on_time_rate/top_skills/collaboration_types/data_sources/generated_at` 为标准；深化字段附加返回。
+- 画像只基于项目成果、工时记录和已确认贡献，不读取 Agent 对话。
+- `users.skills` 仅为自报技能/冷启动信息，不计作历史完成证据。
+- `efficiency` 与 `average_efficiency` 同义，都是完成任务实际工时/预估工时比；不与打卡工时相加。
+- `contributions_total/collaboration_types/active_months` 中的贡献只使用 confirmed。
+- 不输出人格评价、道德评价或公开排名；用户可查看来源和计算口径。
 
 ### 11.4 获取跨项目合作关系
 
@@ -2200,22 +2271,30 @@ GET /api/users/me/collaborations
       "name": "李四",
       "shared_project_count": 3,
       "shared_task_count": 12,
-      "last_collaborated_at": "2026-12-20",
-      "cooperation_score": 82
+      "last_collaborated_at": "2026-08-30T09:00:00Z",
+      "cooperation_score": 100,
+      "source_project_ids": [1, 2, 3],
+      "calculation": {
+        "formula": "min(100, 共同项目数×30 + min(共同任务数,10)×5)",
+        "scope": "双方均参与、双方均授权且项目未删除；共同任务要求双方均为负责人或参与者",
+        "personality_inference": false
+      }
     }
-  ]
+  ],
+  "generated_at": "2026-08-30T10:00:00Z",
+  "calculation_notes": "合作分只表达共同项目/共同任务数量，不代表人格、道德或公开排名。"
 }
 ```
 
-只统计双方共同参与且已授权用于协作分析的项目。
+只统计双方共同参与、双方均授权且未删除的项目；任一方撤销该项目授权后立即从结果移除。
 
-### 11.4 获取长期任务推荐
+### 11.5 获取长期任务方向推荐
 
 ```http
 GET /api/users/me/recommendations
 ```
 
-权限：需要登录。
+权限：需要登录。该接口只读，不修改项目任务、负责人、评审人或导师。
 
 成功响应：`200 OK`
 
@@ -2223,23 +2302,30 @@ GET /api/users/me/recommendations
 {
   "recommendations": [
     {
-      "skill": "后端",
+      "skill": "后端开发",
       "score": 88,
-      "reason": "历史完成后端任务质量较高，效率稳定。"
+      "reason": "授权历史中有 12 个相关任务证据，质量均值 4.3/5，工时比 1.1。",
+      "sample_count": 12,
+      "data_sources": ["assigned_tasks", "completed_tasks", "quality_reviews"],
+      "source_project_ids": [1, 2, 3],
+      "cold_start": false
     }
-  ]
+  ],
+  "data_status": "retained",
+  "generated_at": "2026-08-30T10:00:00Z",
+  "calculation_notes": "历史方向使用真实任务技能强度；冷启动固定 50 分并显式标记，不伪装成历史能力。"
 }
 ```
 
-新用户缺少历史数据时，使用技能和负载规则推荐。
+无历史但有自报技能时，返回 `score=50`、`sample_count=0`、`cold_start=true`、`data_sources=["self_declared_skills"]`。授权状态为 frozen/deleted 时返回空列表和明确说明。
 
-### 11.5 获取数据授权设置
+### 11.6 获取数据授权设置
 
 ```http
 GET /api/users/me/authorizations
 ```
 
-权限：需要登录。
+权限：需要登录。默认不写库；未创建授权记录时按“全局启用、保留数据”读取。
 
 成功响应：`200 OK`
 
@@ -2247,11 +2333,25 @@ GET /api/users/me/authorizations
 {
   "cross_project_profile": true,
   "collaboration_analysis": true,
-  "history_visible": true
+  "history_visible": true,
+  "global_enabled": true,
+  "data_status": "retained",
+  "retention_mode": "retained",
+  "project_overrides": { "3": false },
+  "projects": [
+    {
+      "project_id": 3,
+      "project_name": "课程项目",
+      "project_status": "archived",
+      "membership_status": "left",
+      "override": false,
+      "enabled": false
+    }
+  ]
 }
 ```
 
-### 11.6 更新数据授权
+### 11.7 更新数据授权
 
 ```http
 PATCH /api/users/me/authorizations
@@ -2263,18 +2363,25 @@ PATCH /api/users/me/authorizations
 
 ```json
 {
-  "cross_project_profile": false,
-  "collaboration_analysis": true,
-  "history_visible": true
+  "global_enabled": false,
+  "project_overrides": {
+    "3": true,
+    "4": null
+  }
 }
 ```
 
-成功响应：`200 OK`
+`true/false` 分别允许/关闭项目，`null` 删除项目覆盖并跟随全局。兼容字段 `cross_project_profile/collaboration_analysis/history_visible` 仍可传入，但本产品两档 UI 下三者必须一致。
 
-返回更新后的授权对象。
+成功响应：`200 OK`，返回更新后的完整授权对象。关闭全局且无启用覆盖时为 frozen，停止跨项目分析但保留团队原始数据。
 
-用户关闭授权后，相关跨项目分析必须停止使用其数据；个人画像必须停止更新或删除。
+### 11.8 删除画像派生数据
 
+```http
+DELETE /api/users/me/profile-data
+```
+
+权限：需要登录。删除项目覆盖和画像授权派生状态，置 `data_status=deleted`；不删除同一真实项目的任务、贡献、工时或周报。
 ---
 
 ## 12. 接口实现优先级

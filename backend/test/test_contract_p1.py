@@ -61,7 +61,7 @@ def test_contributions_analytics_exports_and_agent(tmp_path, monkeypatch):
     assert by_task.status_code == 200 and by_task.json()["task"]["task_id"] == task["id"]
     assert owner.get(f"/api/projects/{pid}/members/load").status_code == 200
     assert owner.get(f"/api/projects/{pid}/risks").status_code == 200
-    weekly = owner.get(f"/api/projects/{pid}/weekly-report")
+    weekly = owner.post(f"/api/projects/{pid}/weekly-report")
     assert weekly.status_code == 200 and "summary" in weekly.json()
     weekly_md = owner.get(f"/api/projects/{pid}/weekly-report", params={"format": "markdown"})
     assert weekly_md.status_code == 200 and weekly_md.headers["content-type"].startswith("text/markdown")
@@ -72,7 +72,7 @@ def test_contributions_analytics_exports_and_agent(tmp_path, monkeypatch):
     markdown = owner.get(f"/api/projects/{pid}/report/export")
     assert markdown.status_code == 200 and markdown.headers["content-type"].startswith("text/markdown")
     pdf = owner.get(f"/api/projects/{pid}/report/export", params={"format": "pdf"})
-    assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+    assert pdf.status_code == 501 and pdf.json()["error"]["code"] == "NOT_IMPLEMENTED"
 
     owner.post(f"/api/projects/{pid}/tasks", json={"title": "尚未分配的风险任务", "due_date": "2026-08-26"})
     chat = owner.post(f"/api/projects/{pid}/agent/chat", json={"message": "目前最大的风险是什么？", "session_id": "contract"})

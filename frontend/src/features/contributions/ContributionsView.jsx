@@ -13,6 +13,7 @@ function ContributionsView({
   online,
   setProject,
   onToast,
+  onReload,
 }) {
   const [kind, setKind] = useState("all");
   const [memberId, setMemberId] = useState("all");
@@ -77,7 +78,7 @@ function ContributionsView({
           ) : null
         }
       />
-      <GitHubIntegration project={project} onToast={onToast} onReload={onReload} />
+      <GitHubIntegration project={project} role={role} currentUserId={currentUser?.id} onToast={onToast} onReload={onReload} />
       <div className="ledger-summary">
         <Metric
           label="本周贡献"
@@ -216,6 +217,9 @@ function ContributionItem({ c, i, isOwner, onDecide }) {
               c.status
             ] || "待确认"}
           </span>
+          {c.source && c.source !== "manual" && (
+            <span className="source-label">来源：{{ github: "GitHub", feishu: "飞书", tencent_doc: "腾讯文档" }[c.source] || c.source}</span>
+          )}
           {c.evidence_url && (
             <a href={c.evidence_url} target="_blank" rel="noreferrer">
               查看证明

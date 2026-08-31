@@ -23,3 +23,8 @@ collab.db
 # 浏览器自动化与本地截图产物
 .playwright-mcp/
 stage2-*.png
+CLAUDE.md
+# Playwright E2E 本地产物
+.e2e/
+frontend/test-results/
+frontend/playwright-report/

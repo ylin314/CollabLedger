@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -23,6 +24,7 @@ from backend.services.recommend import (
 LOAD_LABELS = {"low": "低负载", "normal": "正常", "high": "高负载"}
 
 
+ACTIVE_LOAD_STATUSES = ("assigned", "in_progress", "paused", "overdue")
 LOAD_WEIGHT_DEFAULTS = {"in_progress": 1.0, "assigned": 0.6, "paused": 0.5, "overdue": 1.3}
 
 
@@ -56,11 +58,11 @@ def internal_member_load(project_id: int) -> dict[str, Any]:
             "weighted_load": round(weighted, 2),
             "weighted_level": weighted_level,
             "weighted_label": LOAD_LABELS[weighted_level],
-            "weighted_overdue_tasks": sum(1 for task in tasks if task["status"] in ("overdue", "unfinished")),
-            "rule": "进行中 / 已分配 / 暂停 / 延期任务计入当前负载；达到最大并发任务数视为超负载",
+            "weighted_overdue_tasks": sum(1 for task in tasks if task["status"] == "overdue"),
+            "rule": "进行中 / 已分配 / 暂停 / 延期任务计入当前负载；未完成（unfinished）是项目结束后的终态，不计当前负载",
         })
     conn.close()
-    return {"project_id": project_id, "generated_at": now_iso(), "rule": "负载 = 当前占用任务数 / 最大并发任务数；加权负载 = Σ状态权重 / 最大并发任务数（进行中 1.0、已分配 0.6、暂停 0.5、延期 1.3）；<0.5 低负载，0.5-0.8 正常，>0.8 高负载", "members": result}
+    return {"project_id": project_id, "generated_at": now_iso(), "active_statuses": list(ACTIVE_LOAD_STATUSES), "rule": "负载 = 当前占用任务数 / 最大并发任务数；加权负载 = Σ状态权重 / 最大并发任务数（进行中 1.0、已分配 0.6、暂停 0.5、延期 1.3）；未完成（unfinished）不计当前负载；<0.5 低负载，0.5-0.8 正常，>0.8 高负载", "members": result}
 
 
 
@@ -86,10 +88,23 @@ def _rule_risk_summary(risks: list[dict[str, Any]]) -> str:
     return f"当前共有 {len(risks)} 个项目风险，优先关注：{first.get('message')}。建议按风险严重度逐项处理。"
 
 
-def _llm_risk_summary(project_id: int, risks: list[dict[str, Any]]) -> tuple[str, str]:
-    """LLM 生成风险自然语言总结；任一环节失败回退规则拼接，接口不报错。"""
-    if not risks:
-        return "当前未发现明显项目风险。", "rule"
+def _safe_llm_error(exc: Exception) -> str:
+    """返回可诊断但不泄露凭据的简短错误。"""
+    text = str(exc).strip() or type(exc).__name__
+    for env_key in ("LLM_API_KEY", "OPENAI_API_KEY"):
+        secret = os.getenv(env_key, "")
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"(?i)((?:authorization|api[_-]?key|token|bearer)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)([?&](?:api_key|key|token)=)[^&\s]+", r"\1[REDACTED]", text)
+    return text[:240]
+
+
+def _llm_risk_summary(project_id: int, risks: list[dict[str, Any]]) -> tuple[str, str, str, Optional[str]]:
+    """LLM 生成风险总结；失败时显式返回规则回退状态和脱敏错误。"""
+    fallback = _rule_risk_summary(risks)
+    if not AgentConfigAvailable():
+        return fallback, "rule", "not_configured", None
     facts = [{"type": r.get("type"), "level": r.get("level"), "message": r.get("message"), "rule": r.get("rule")} for r in risks[:8]]
     prompt = (
         "你是协作账本的风险总结助手。只依据给定的风险事实，用 1-2 句中文总结当前最需要关注的风险并给出下一步建议。"
@@ -97,14 +112,13 @@ def _llm_risk_summary(project_id: int, risks: list[dict[str, Any]]) -> tuple[str
         f"项目事实：{json.dumps({'project_id': project_id, 'risks': facts}, ensure_ascii=False)}"
     )
     try:
-        from backend.services.recommend import llm_json
         data = llm_json(prompt, timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "45")))
         text = str(data.get("summary") or "").strip()
         if text:
-            return text, "llm"
-    except Exception:
-        pass
-    return _rule_risk_summary(risks), "rule"
+            return text, "llm", "ok", None
+        return fallback, "rule", "failed", "LLM 未返回风险总结"
+    except Exception as exc:
+        return fallback, "rule", "failed", _safe_llm_error(exc)
 
 
 def internal_project_risks(project_id: int, summarize: bool = False) -> dict[str, Any]:
@@ -116,12 +130,13 @@ def internal_project_risks(project_id: int, summarize: bool = False) -> dict[str
         elif task["due_date"] and task["due_date"] <= soon.isoformat():
             risks.append(_risk_item("upcoming_deadline", "medium", f"任务「{task['title']}」临近截止", "截止日期在未来 3 天内", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
         if task["assignee_id"] is None:
-            risks.append(_risk_item("unassigned_task", "medium", f"任务「{task['title']}」尚未分配", "任务没有负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
-        if task["priority"] == "high" and task["status"] == "unassigned":
-            risks.append(_risk_item("critical_unassigned", "high", f"关键任务「{task['title']}」无人承接", "高优先级任务未分配负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
+            if task["priority"] == "high":
+                risks.append(_risk_item("critical_unassigned", "high", f"关键任务「{task['title']}」无人承接", "高优先级任务未分配负责人（已聚合普通未分配风险）", task_id=task["id"], due_date=task["due_date"], status=task["status"], source_types=["critical_unassigned", "unassigned_task"], unassigned_category="critical"))
+            else:
+                risks.append(_risk_item("unassigned_task", "medium", f"任务「{task['title']}」尚未分配", "任务没有负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"], source_types=["unassigned_task"], unassigned_category="normal"))
     for member in internal_member_load(project_id)["members"]:
-        if member["load_level"] == "high":
-            risks.append(_risk_item("high_member_load", "medium", f"{member['name']}当前负载为 {member['current_task_count']}/{member['max_concurrent_tasks']}", "当前占用任务数 / 最大并发任务数 > 0.8", user_id=member["user_id"], current_task_count=member["current_task_count"], max_concurrent_tasks=member["max_concurrent_tasks"]))
+        if member["weighted_level"] == "high":
+            risks.append(_risk_item("high_member_load", "medium", f"{member['name']}当前加权负载为 {member['weighted_load']:.2f}", "加权负载 = Σ状态权重 / 最大并发任务数，> 0.8 为高负载", user_id=member["user_id"], current_task_count=member["current_task_count"], max_concurrent_tasks=member["max_concurrent_tasks"], load_ratio=member["load_ratio"], load_level=member["load_level"], weighted_load=member["weighted_load"], weighted_level=member["weighted_level"]))
     last = conn.execute("SELECT MAX(at) at FROM task_logs l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=?", (project_id,)).fetchone()["at"]
     if last:
         try:
@@ -132,9 +147,11 @@ def internal_project_risks(project_id: int, summarize: bool = False) -> dict[str
     risks.sort(key=lambda item: item.get("severity", 0), reverse=True)
     payload: dict[str, Any] = {"project_id": project_id, "generated_at": now_iso(), "count": len(risks), "risks": risks, "rule": "覆盖延期、临近截止、无负责人和高负载四类风险；按严重度降序排列"}
     if summarize and risks:
-        summary, summary_source = _llm_risk_summary(project_id, risks)
+        summary, summary_source, llm_status, llm_error = _llm_risk_summary(project_id, risks)
         payload["summary"] = summary
         payload["summary_source"] = summary_source
+        payload["llm_status"] = llm_status
+        payload["llm_error"] = llm_error
     conn.close()
     return payload
 
@@ -156,36 +173,136 @@ def _week_bounds(start_date: Optional[date], end_date: Optional[date]) -> tuple[
 
 
 def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str, Any]:
-    conn = db(); project = ensure_project(conn, project_id); start_s, end_s = start.isoformat(), end.isoformat()
-    total = conn.execute("SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL", (project_id,)).fetchone()["n"]
-    completed = conn.execute("SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ?", (project_id, start_s, end_s)).fetchone()["n"]
-    in_progress = conn.execute("SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND status='in_progress'", (project_id,)).fetchone()["n"]
-    overdue = conn.execute("SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND status IN ('overdue','unfinished')", (project_id,)).fetchone()["n"]
-    checkins = conn.execute("SELECT COUNT(*) n,COALESCE(SUM(hours),0) hours FROM task_checkins WHERE project_id=? AND substr(created_at,1,10) BETWEEN ? AND ?", (project_id, start_s, end_s)).fetchone()
-    contributions = conn.execute("SELECT COUNT(*) n FROM contributions WHERE project_id=? AND deleted_at IS NULL AND substr(occurred_at,1,10) BETWEEN ? AND ?", (project_id, start_s, end_s)).fetchone()["n"]
-    task_hours = conn.execute("SELECT COALESCE(SUM(actual_hours),0) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND substr(updated_at,1,10) BETWEEN ? AND ?", (project_id, start_s, end_s)).fetchone()["n"]
-    highlights = [row["title"] for row in conn.execute("SELECT title FROM tasks WHERE project_id=? AND deleted_at IS NULL AND status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ? ORDER BY updated_at DESC LIMIT 5", (project_id, start_s, end_s)).fetchall()]
-    member_rows = conn.execute("SELECT u.id,u.name FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? ORDER BY u.id", (project_id,)).fetchall()
+    """从真实项目表生成一份周报快照；工时与贡献按 D3 的诚实口径计算。"""
+    conn = db(); project = ensure_project(conn, project_id)
+    start_s, end_s = start.isoformat(), end.isoformat()
+    date_expr = "COALESCE(substr(occurred_at,1,10),substr(created_at,1,10))"
+    task_total = conn.execute(
+        "SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL",
+        (project_id,),
+    ).fetchone()["n"]
+    completed = conn.execute(
+        "SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL "
+        "AND status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ?",
+        (project_id, start_s, end_s),
+    ).fetchone()["n"]
+    in_progress = conn.execute(
+        "SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND status='in_progress'",
+        (project_id,),
+    ).fetchone()["n"]
+    overdue = conn.execute(
+        "SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL "
+        "AND status IN ('overdue','unfinished')",
+        (project_id,),
+    ).fetchone()["n"]
+    checkins = conn.execute(
+        "SELECT COUNT(*) n,COALESCE(SUM(hours),0) hours FROM task_checkins "
+        "WHERE project_id=? AND substr(created_at,1,10) BETWEEN ? AND ?",
+        (project_id, start_s, end_s),
+    ).fetchone()
+    contribution_stats = conn.execute(
+        f"SELECT "
+        f"SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) confirmed_count, "
+        f"SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending_count, "
+        f"SUM(CASE WHEN status='disputed' THEN 1 ELSE 0 END) disputed_count "
+        f"FROM contributions WHERE project_id=? AND deleted_at IS NULL AND {date_expr} BETWEEN ? AND ?",
+        (project_id, start_s, end_s),
+    ).fetchone()
+    task_hours_all = conn.execute(
+        "SELECT COALESCE(SUM(actual_hours),0) hours FROM tasks WHERE project_id=? "
+        "AND deleted_at IS NULL AND substr(updated_at,1,10) BETWEEN ? AND ?",
+        (project_id, start_s, end_s),
+    ).fetchone()["hours"] or 0
+    highlights = [
+        row["title"] for row in conn.execute(
+            "SELECT title FROM tasks WHERE project_id=? AND deleted_at IS NULL "
+            "AND status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ? "
+            "ORDER BY updated_at DESC LIMIT 5",
+            (project_id, start_s, end_s),
+        ).fetchall()
+    ]
+    member_rows = conn.execute(
+        "SELECT u.id,u.name FROM users u JOIN memberships m ON m.user_id=u.id "
+        "WHERE m.project_id=? ORDER BY u.id",
+        (project_id,),
+    ).fetchall()
     members = []
     for member in member_rows:
-        ms = conn.execute("""SELECT SUM(CASE WHEN status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ? THEN 1 ELSE 0 END) completed_tasks,SUM(CASE WHEN status IN ('assigned','in_progress','paused','overdue') THEN 1 ELSE 0 END) active_tasks,COALESCE(SUM(CASE WHEN substr(updated_at,1,10) BETWEEN ? AND ? THEN actual_hours ELSE 0 END),0) hours FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL""", (start_s, end_s, start_s, end_s, project_id, member["id"])).fetchone()
-        ci = conn.execute("SELECT COUNT(*) n,COALESCE(SUM(hours),0) hours FROM task_checkins WHERE project_id=? AND user_id=? AND substr(created_at,1,10) BETWEEN ? AND ?", (project_id, member["id"], start_s, end_s)).fetchone()
-        members.append({"user_id": member["id"], "name": member["name"], "completed_tasks": ms["completed_tasks"] or 0, "active_tasks": ms["active_tasks"] or 0, "checkin_count": ci["n"], "actual_hours": round((ms["hours"] or 0) + (ci["hours"] or 0), 2)})
+        ms = conn.execute(
+            "SELECT "
+            "SUM(CASE WHEN status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ? THEN 1 ELSE 0 END) completed_tasks,"
+            "SUM(CASE WHEN status IN ('assigned','in_progress','paused','overdue') THEN 1 ELSE 0 END) active_tasks,"
+            "COALESCE(SUM(CASE WHEN substr(updated_at,1,10) BETWEEN ? AND ? THEN actual_hours ELSE 0 END),0) task_hours "
+            "FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL",
+            (start_s, end_s, start_s, end_s, project_id, member["id"]),
+        ).fetchone()
+        ci = conn.execute(
+            "SELECT COUNT(*) n,COALESCE(SUM(hours),0) hours FROM task_checkins "
+            "WHERE project_id=? AND user_id=? AND substr(created_at,1,10) BETWEEN ? AND ?",
+            (project_id, member["id"], start_s, end_s),
+        ).fetchone()
+        cs = conn.execute(
+            f"SELECT "
+            f"SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) confirmed_count, "
+            f"SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending_count, "
+            f"SUM(CASE WHEN status='disputed' THEN 1 ELSE 0 END) disputed_count "
+            f"FROM contributions WHERE project_id=? AND user_id=? AND deleted_at IS NULL AND {date_expr} BETWEEN ? AND ?",
+            (project_id, member["id"], start_s, end_s),
+        ).fetchone()
+        checkin_count = ci["n"] or 0
+        checkin_hours = round(ci["hours"] or 0, 2)
+        task_hours = round(ms["task_hours"] or 0, 2)
+        hours_source = "checkin" if checkin_count else "task"
+        effective_hours = checkin_hours if checkin_count else task_hours
+        pending_count = (cs["pending_count"] or 0) + (cs["disputed_count"] or 0)
+        members.append({
+            "user_id": member["id"], "name": member["name"],
+            "completed_tasks": ms["completed_tasks"] or 0, "active_tasks": ms["active_tasks"] or 0,
+            "checkin_count": checkin_count, "checkin_hours": checkin_hours,
+            "task_hours": task_hours, "actual_hours": effective_hours,
+            "hours_source": hours_source,
+            "contribution_count": cs["confirmed_count"] or 0,
+            "pending_contribution_count": pending_count,
+            "pending_count": cs["pending_count"] or 0,
+            "disputed_count": cs["disputed_count"] or 0,
+        })
     conn.close()
     risk_data = internal_project_risks(project_id)
     risks = [item["message"] for item in risk_data["risks"][:5]]
     next_actions: list[str] = []
-    if any(item["type"] == "unassigned_task" for item in risk_data["risks"]): next_actions.append("优先分配未分配任务")
-    if any(item["type"] == "overdue_task" for item in risk_data["risks"]): next_actions.append("为延期任务调整排期")
-    if any(item["type"] == "high_member_load" for item in risk_data["risks"]): next_actions.append("为高负载成员分流任务")
-    if not next_actions: next_actions.append("按当前计划继续推进并及时打卡")
-    summary = {"tasks_total": total, "tasks_completed": completed, "tasks_in_progress": in_progress, "tasks_overdue": overdue, "checkin_count": checkins["n"], "contribution_count": contributions, "actual_hours": round((task_hours or 0) + (checkins["hours"] or 0), 2)}
+    if any(item["type"] in ("unassigned_task", "critical_unassigned") for item in risk_data["risks"]):
+        next_actions.append("优先分配未分配任务")
+    if any(item["type"] == "overdue_task" for item in risk_data["risks"]):
+        next_actions.append("为延期任务调整排期")
+    if any(item["type"] == "high_member_load" for item in risk_data["risks"]):
+        next_actions.append("为高负载成员分流任务")
+    if not next_actions:
+        next_actions.append("按当前计划继续推进并及时打卡")
+    confirmed_count = contribution_stats["confirmed_count"] or 0
+    pending_count = (contribution_stats["pending_count"] or 0) + (contribution_stats["disputed_count"] or 0)
+    total_effective_hours = round(sum(member["actual_hours"] for member in members), 2)
+    summary = {
+        "tasks_total": task_total, "tasks_completed": completed, "tasks_in_progress": in_progress,
+        "tasks_overdue": overdue, "checkin_count": checkins["n"] or 0,
+        "checkin_hours": round(checkins["hours"] or 0, 2),
+        "task_hours": round(task_hours_all, 2), "actual_hours": total_effective_hours,
+        "hours_source": "member-wise_checkin_priority",
+        "contribution_count": confirmed_count,
+        "pending_contribution_count": pending_count,
+        "pending_count": contribution_stats["pending_count"] or 0,
+        "disputed_count": contribution_stats["disputed_count"] or 0,
+        "pending_label": f"待确认 {pending_count} 项" if pending_count else None,
+    }
     member_summaries, member_source, member_err = _llm_member_summaries(project_id, start, members)
     for member in members:
         if member_summaries.get(member["user_id"]):
             member["summary"] = member_summaries[member["user_id"]]; member["summary_source"] = member_source
         else:
-            member["summary"] = f"本周完成 {member['completed_tasks']} 项任务，打卡 {member['checkin_count']} 次，实际工时 {member['actual_hours']} 小时"; member["summary_source"] = "rule"
+            member["summary"] = (
+                f"本周完成 {member['completed_tasks']} 项任务，确认贡献 {member['contribution_count']} 项，"
+                f"{member['checkin_hours'] if member['hours_source'] == 'checkin' else member['task_hours']} 小时"
+            )
+            member["summary_source"] = "rule"
     insight, insight_source, insight_err = _llm_overall_insight(project_id, start, summary, risks)
     if not insight:
         insight = _rule_insight(summary, risks, next_actions); insight_source = "rule"
@@ -199,9 +316,8 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
         "summary": summary, "highlights": highlights, "risks": risks, "next_actions": next_actions,
         "members": members, "insight": insight, "insight_source": insight_source,
         "source": source, "llm_error": llm_error, "generated_at": now_iso(), "stored": False,
-        "disclaimer": "周报只汇总已有项目事实，不虚构完成情况。",
+        "disclaimer": "周报只汇总已有项目事实，不虚构完成情况；确认贡献与待确认贡献分开，打卡工时优先且不与任务工时相加。",
     }
-
 
 def _rule_insight(summary: dict[str, Any], risks: list[str], next_actions: list[str]) -> str:
     progress = "正常" if summary["tasks_completed"] > 0 else "起步阶段"
@@ -263,33 +379,69 @@ def _weekly_llm_timeout() -> float:
     return float(os.getenv("LLM_TIMEOUT_SECONDS", "45"))
 
 
-def get_weekly_report(project_id: int, week_start: Optional[date] = None, refresh: bool = False, actor_id: Optional[int] = None) -> dict[str, Any]:
-    """获取指定周周报：首次落库、再次读库；refresh=1 强制重新生成并覆盖该周期。"""
-    today = utc_today()
-    start = week_start or (today - timedelta(days=today.weekday()))
-    start = start - timedelta(days=start.weekday())  # 归一化为周一
-    end = start + timedelta(days=6)
-    conn = db(); ensure_project(conn, project_id)
-    start_s, end_s = start.isoformat(), end.isoformat()
-    row = conn.execute("SELECT * FROM weekly_reports WHERE project_id=? AND period_start=?", (project_id, start_s)).fetchone()
-    if row and not refresh:
-        try:
-            data = json.loads(row["payload"] or "{}")
-        except (TypeError, json.JSONDecodeError):
-            data = {}
-        data["stored"] = True
-        conn.close()
-        return data
-    data = internal_weekly_report(project_id, start, end)
+def _weekly_period_payload(project_id: int, start: date, end: date) -> dict[str, Any]:
+    return {
+        "project_id": project_id,
+        "period": {"start_date": start.isoformat(), "end_date": end.isoformat(), "week_start": start.isoformat()},
+        "exists": False,
+        "stored": False,
+        "source": "none",
+        "summary": None,
+        "members": [],
+        "highlights": [],
+        "risks": [],
+        "next_actions": [],
+        "disclaimer": "尚未生成本周期周报；请在周报页面点击“生成/刷新周报”。",
+    }
+
+
+def _weekly_row_data(row: Any, project_id: int, start: date, end: date) -> dict[str, Any]:
+    try:
+        data = json.loads(row["payload"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        data = _weekly_period_payload(project_id, start, end)
+    data["exists"] = True
     data["stored"] = True
-    stamp = now_iso()
-    if row:
-        conn.execute("UPDATE weekly_reports SET payload=?,source=?,llm_error=?,updated_at=? WHERE id=?", (json.dumps(data, ensure_ascii=False), data.get("source") or "rule", data.get("llm_error"), stamp, row["id"]))
-    else:
-        conn.execute("INSERT INTO weekly_reports(project_id,period_start,period_end,payload,source,llm_error,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)", (project_id, start_s, end_s, json.dumps(data, ensure_ascii=False), data.get("source") or "rule", data.get("llm_error"), actor_id, stamp))
-    conn.commit(); conn.close()
     return data
 
+
+def get_weekly_report(project_id: int, week_start: Optional[date] = None, **_: Any) -> dict[str, Any]:
+    """只读查询已存在的周报；不会因为打开工作区或 Agent 查询而写库。"""
+    today = utc_today()
+    start = week_start or (today - timedelta(days=today.weekday()))
+    start = start - timedelta(days=start.weekday())
+    end = start + timedelta(days=6)
+    conn = db(); ensure_project(conn, project_id)
+    row = conn.execute(
+        "SELECT * FROM weekly_reports WHERE project_id=? AND period_start=? AND period_end=?",
+        (project_id, start.isoformat(), end.isoformat()),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return _weekly_period_payload(project_id, start, end)
+    data = _weekly_row_data(row, project_id, start, end)
+    conn.close()
+    return data
+
+
+def generate_weekly_report(project_id: int, week_start: Optional[date] = None, actor_id: Optional[int] = None) -> dict[str, Any]:
+    """显式生成或刷新周报，并以周期唯一键幂等落库。"""
+    today = utc_today()
+    start = week_start or (today - timedelta(days=today.weekday()))
+    start = start - timedelta(days=start.weekday())
+    end = start + timedelta(days=6)
+    data = internal_weekly_report(project_id, start, end)
+    data["stored"] = True; data["exists"] = True
+    stamp = now_iso()
+    conn = db(); ensure_project(conn, project_id)
+    conn.execute(
+        "INSERT INTO weekly_reports(project_id,period_start,period_end,payload,source,llm_error,created_by,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,period_start,period_end) DO UPDATE SET "
+        "payload=excluded.payload,source=excluded.source,llm_error=excluded.llm_error,updated_at=excluded.updated_at",
+        (project_id, start.isoformat(), end.isoformat(), json.dumps(data, ensure_ascii=False), data.get("source") or "rule", data.get("llm_error"), actor_id, stamp, stamp),
+    )
+    conn.commit(); conn.close()
+    return data
 
 def list_weekly_reports(project_id: int, limit: int = 20, before: Optional[date] = None) -> dict[str, Any]:
     conn = db(); ensure_project(conn, project_id)
@@ -297,7 +449,7 @@ def list_weekly_reports(project_id: int, limit: int = 20, before: Optional[date]
     where = "project_id=?"
     if before is not None:
         where += " AND period_start<?"; args.append(before.isoformat())
-    rows = conn.execute(f"SELECT id,project_id,period_start,period_end,source,llm_error,created_by,created_at,updated_at,payload FROM weekly_reports WHERE {where} ORDER BY period_start DESC LIMIT ?", (*args, limit)).fetchall()
+    rows = conn.execute(f"SELECT w.id,w.project_id,w.period_start,w.period_end,w.source,w.llm_error,w.created_by,u.name created_by_name,w.created_at,w.updated_at,w.payload FROM weekly_reports w LEFT JOIN users u ON u.id=w.created_by WHERE {where.replace('project_id=', 'w.project_id=')} ORDER BY w.period_start DESC LIMIT ?", (*args, limit)).fetchall()
     conn.close()
     items = []
     for row in rows:
@@ -306,36 +458,53 @@ def list_weekly_reports(project_id: int, limit: int = 20, before: Optional[date]
         except (TypeError, json.JSONDecodeError):
             payload = {}
         summary = payload.get("summary") or {}
-        creator = None
-        if row["created_by"] is not None:
-            uconn = db()
-            u = uconn.execute("SELECT name FROM users WHERE id=?", (row["created_by"],)).fetchone()
-            creator = u["name"] if u else None
-            uconn.close()
         items.append({
             "id": row["id"], "project_id": row["project_id"], "period_start": row["period_start"], "period_end": row["period_end"],
-            "source": row["source"], "llm_error": row["llm_error"], "created_by": creator, "created_at": row["created_at"], "updated_at": row["updated_at"],
+            "source": row["source"], "llm_error": row["llm_error"], "created_by": row["created_by_name"], "created_at": row["created_at"], "updated_at": row["updated_at"],
             "tasks_completed": summary.get("tasks_completed"), "checkin_count": summary.get("checkin_count"), "risks_count": len(payload.get("risks") or []),
         })
     return {"project_id": project_id, "count": len(items), "items": items}
 
 
 def _weekly_markdown(data: dict[str, Any]) -> str:
+    if not data.get("exists", True) or not data.get("summary"):
+        period = data.get("period") or {}
+        return "\n".join([
+            f"# 周报（{period.get('start_date', '未指定')} 至 {period.get('end_date', '未指定')}）",
+            "", data.get("disclaimer") or "尚未生成本周期周报。",
+        ]) + "\n"
     summary = data["summary"]
-    lines = [f"# {data['project_name']} 周报", "", f"统计周期：{data['period']['start_date']} 至 {data['period']['end_date']}", "", "## 概览", f"- 任务总数：{summary['tasks_total']}", f"- 本周完成：{summary['tasks_completed']}", f"- 进行中：{summary['tasks_in_progress']}", f"- 延期：{summary['tasks_overdue']}", f"- 打卡次数：{summary['checkin_count']}", f"- 实际工时：{summary['actual_hours']}", "", "## 成员产出"]
+    pending_label = summary.get("pending_label") or "待确认 0 项"
+    lines = [
+        f"# {data['project_name']} 周报", "",
+        f"统计周期：{data['period']['start_date']} 至 {data['period']['end_date']}", "",
+        "## 概览",
+        f"- 任务总数：{summary['tasks_total']}",
+        f"- 本周完成：{summary['tasks_completed']}",
+        f"- 进行中：{summary['tasks_in_progress']}",
+        f"- 延期：{summary['tasks_overdue']}",
+        f"- 打卡次数：{summary['checkin_count']}",
+        f"- 打卡工时：{summary.get('checkin_hours', 0)}（有打卡时作为有效工时）",
+        f"- 任务工时：{summary.get('task_hours', 0)}（无打卡时作为有效工时）",
+        f"- 有效工时：{summary.get('actual_hours', 0)}（打卡优先，不与任务工时相加）",
+        f"- 确认贡献：{summary.get('contribution_count', 0)} 项",
+        f"- {pending_label}", "", "## 成员产出",
+    ]
     members = data.get("members") or []
     if members:
         lines.append("> 不排名，仅展示每人本周事实与产出摘要")
         for member in members:
-            summary = member.get("summary") or f'完成 {member["completed_tasks"]} 项、打卡 {member["checkin_count"]} 次、工时 {member["actual_hours"]} 小时'
-            lines.append(f"- {member['name']}：{summary}")
+            member_hours = member.get("checkin_hours", 0) if member.get("hours_source") == "checkin" else member.get("task_hours", 0)
+            member_pending = member.get("pending_contribution_count", 0)
+            pending_text = f"，待确认 {member_pending} 项" if member_pending else ""
+            summary_text = member.get("summary") or f"完成 {member['completed_tasks']} 项任务，确认贡献 {member.get('contribution_count', 0)} 项，工时 {member_hours} 小时{pending_text}"
+            lines.append(f"- {member['name']}：{summary_text}（打卡工时 {member.get('checkin_hours', 0)}，任务工时 {member.get('task_hours', 0)}，有效来源 {member.get('hours_source') or 'task'}）")
     else:
         lines.append("- 本周暂无成员产出数据")
     lines.extend(["", "## 完成亮点"])
-    lines.extend([f"- {item}" for item in data["highlights"]] or ["- 暂无已完成任务"])
-    lines.extend(["", "## 整体洞察", data.get("insight") or "（未生成洞察）", "", "## 风险", *([f"- {item}" for item in data["risks"]] or ["- 暂无明显风险"]), "", "## 下一步", *[f"- {item}" for item in data["next_actions"]], "", data.get("disclaimer") or "", f"生成时间：{data['generated_at']}", f"来源：{data.get('source') or 'rule'}"])
+    lines.extend([f"- {item}" for item in data.get("highlights") or []] or ["- 暂无已完成任务"])
+    lines.extend(["", "## 整体洞察", data.get("insight") or "（未生成洞察）", "", "## 风险", *([f"- {item}" for item in data.get("risks") or []] or ["- 暂无明显风险"]), "", "## 下一步", *[f"- {item}" for item in data.get("next_actions") or []], "", data.get("disclaimer") or "", f"生成时间：{data.get('generated_at', '—')}", f"来源：{data.get('source') or 'rule'}"])
     return "\n".join(line for line in lines if line is not None)
-
 
 def _report_markdown(data: dict[str, Any]) -> str:
     overall = data["overall"]
@@ -396,4 +565,4 @@ def list_members_internal(conn, project_id: int) -> list[dict[str, Any]]:
         item = dict(row); item["skills"] = json.loads(item["skills"] or "[]"); result.append(item)
     return result
 
-__all__ = ['internal_member_load', 'internal_recommendations', 'recommendations', 'persist_recommendation_record', 'build_recommendation_payload', 'batch_recommendations', 'list_recommendation_history', 'decide_recommendation', 'internal_project_risks', 'internal_project_report', '_week_bounds', 'internal_weekly_report', 'get_weekly_report', 'list_weekly_reports', '_weekly_markdown', '_report_markdown', '_simple_pdf_bytes', 'internal_task_detail', 'internal_project_snapshot', 'list_members_internal', 'RECOMMEND_WEIGHTS', 'RECOMMEND_DISCLAIMER']
+__all__ = ['internal_member_load', 'internal_recommendations', 'recommendations', 'persist_recommendation_record', 'build_recommendation_payload', 'batch_recommendations', 'list_recommendation_history', 'decide_recommendation', 'internal_project_risks', 'internal_project_report', '_week_bounds', 'internal_weekly_report', 'get_weekly_report', 'generate_weekly_report', 'list_weekly_reports', '_weekly_markdown', '_report_markdown', '_simple_pdf_bytes', 'internal_task_detail', 'internal_project_snapshot', 'list_members_internal', 'RECOMMEND_WEIGHTS', 'RECOMMEND_DISCLAIMER']

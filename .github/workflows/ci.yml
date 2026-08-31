@@ -18,6 +18,8 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Byte-compile backend and alembic
+        run: python -m compileall -q backend alembic
       - name: Run pytest
         env:
           RECOMMEND_SKILL_MODE: rule

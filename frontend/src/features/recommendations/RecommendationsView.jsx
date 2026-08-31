@@ -3,6 +3,68 @@ import { getJson, sendJson } from "../../api/client";
 import { sourceLabel } from "../../shared/core";
 import { PageTitle, RecommendCard } from "../../shared/components";
 
+function ReviewerPrompt({ taskId, taskTitle, members, assignedUserId, onSaved, onSkip }) {
+  const [reviewerId, setReviewerId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const reviewers = (members || []).filter((member) => {
+    const id = Number(member.user_id || member.id);
+    return id !== Number(assignedUserId) && ["owner", "member", "viewer"].includes(member.role);
+  });
+
+  async function save() {
+    if (!reviewerId || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await sendJson(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ reviewer_id: Number(reviewerId) }),
+      });
+      await onSaved(updated);
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal recommend-modal reviewer-prompt">
+        <div className="modal-head">
+          <div>
+            <span className="eyebrow">OPTIONAL REVIEWER</span>
+            <h2>负责人已更新</h2>
+          </div>
+          <button onClick={onSkip}>×</button>
+        </div>
+        <p className="modal-sub">
+          「{taskTitle}」已完成负责人指派。可选：同时把某人设为评审人。系统不会自动修改评审人。
+        </p>
+        <label>
+          选择评审人（可跳过）
+          <select value={reviewerId} onChange={(event) => setReviewerId(event.target.value)}>
+            <option value="">暂不设置</option>
+            {reviewers.map((member) => (
+              <option key={member.user_id || member.id} value={member.user_id || member.id}>
+                {member.name}{member.role === "viewer" ? "（只读成员）" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {error && <div className="form-error">{error}</div>}
+        <div className="modal-actions">
+          <button className="ghost-button" onClick={onSkip}>跳过</button>
+          <button className="primary-button" disabled={!reviewerId || busy} onClick={save}>
+            {busy ? "保存中…" : "确认设置评审人"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RecommendModal({
   task,
   project,
@@ -10,8 +72,10 @@ function RecommendModal({
   onClose,
   onToast,
   setProject,
+  currentUserId,
 }) {
   const [payload, setPayload] = useState(null);
+  const [reviewerPrompt, setReviewerPrompt] = useState(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState("");
@@ -78,15 +142,27 @@ function RecommendModal({
           ? `已将「${task.title}」改派给${chosen?.name || "选定成员"}`
           : `已将「${task.title}」分配给${chosen?.name || "选定成员"}`,
       );
-      onClose();
+      const canSetReviewer =
+        Number(currentUserId) === Number(project.owner_id) ||
+        Number(currentUserId) === Number(task.created_by);
+      if (canSetReviewer) {
+        setReviewerPrompt({
+          taskId: task.id,
+          taskTitle: task.title,
+          assignedUserId: Number(userId),
+        });
+      } else {
+        onClose();
+      }
     } catch (reason) {
       setError(reason.message);
     }
   }
   const results = payload?.recommendations || [];
   return (
-    <div className="modal-backdrop">
-      <div className="modal recommend-modal">
+    <>
+      <div className="modal-backdrop">
+        <div className="modal recommend-modal">
         <div className="modal-head">
           <div>
             <span className="eyebrow">AI RECOMMENDATION</span>
@@ -187,8 +263,34 @@ function RecommendModal({
             )}
           </div>
         </div>
+        </div>
       </div>
-    </div>
+      {reviewerPrompt && (
+        <ReviewerPrompt
+          taskId={reviewerPrompt.taskId}
+          taskTitle={reviewerPrompt.taskTitle}
+          members={members}
+          assignedUserId={reviewerPrompt.assignedUserId}
+          onSaved={(updated) => {
+            setProject((projectState) => ({
+              ...projectState,
+              tasks: projectState.tasks.map((existing) =>
+                existing.id === reviewerPrompt.taskId
+                  ? { ...existing, ...updated }
+                  : existing,
+              ),
+            }));
+            onToast("评审人已设置");
+            setReviewerPrompt(null);
+            onClose();
+          }}
+          onSkip={() => {
+            setReviewerPrompt(null);
+            onClose();
+          }}
+        />
+      )}
+    </>
   );
 }
 
@@ -196,12 +298,14 @@ function RecommendationsView({
   project,
   members,
   canWrite,
+  currentUserId,
   onRecommend,
   onToast,
   setProject,
   onReload,
 }) {
   const [batch, setBatch] = useState(null);
+  const [reviewerPrompt, setReviewerPrompt] = useState(null);
   const [history, setHistory] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -257,6 +361,19 @@ function RecommendationsView({
       onToast(`已将「${title}」分配给选定成员`);
       await onReload();
       await loadHistory();
+      const task = (project.tasks || []).find(
+        (existing) => existing.id === result.task.id,
+      );
+      const canSetReviewer =
+        Number(currentUserId) === Number(project.owner_id) ||
+        Number(currentUserId) === Number(task?.created_by);
+      if (canSetReviewer) {
+        setReviewerPrompt({
+          taskId: result.task.id,
+          taskTitle: title,
+          assignedUserId: Number(userId),
+        });
+      }
     } catch (reason) {
       setError(reason.message);
     }
@@ -394,6 +511,28 @@ function RecommendationsView({
           ) : null}
         </section>
       ))}
+      {reviewerPrompt && (
+        <ReviewerPrompt
+          taskId={reviewerPrompt.taskId}
+          taskTitle={reviewerPrompt.taskTitle}
+          members={members}
+          assignedUserId={reviewerPrompt.assignedUserId}
+          onSaved={async (updated) => {
+            setProject((projectState) => ({
+              ...projectState,
+              tasks: projectState.tasks.map((existing) =>
+                existing.id === reviewerPrompt.taskId
+                  ? { ...existing, ...updated }
+                  : existing,
+              ),
+            }));
+            onToast("评审人已设置");
+            setReviewerPrompt(null);
+            await onReload();
+          }}
+          onSkip={() => setReviewerPrompt(null)}
+        />
+      )}
     </>
   );
 }

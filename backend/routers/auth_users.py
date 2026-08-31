@@ -15,6 +15,8 @@ from backend.auth import COOKIE_NAME, create_session, hash_password, iso_utc, re
 from backend.core.context import *
 from backend.schemas import *
 from backend.services.profile import build_profile_internal, profile_payload
+from backend.services.profile_authorization import delete_derived_profile_data, get_authorization, update_authorization
+from backend.services.collaboration_profile import build_collaborations, build_long_term_recommendations
 
 router = APIRouter()
 
@@ -127,6 +129,80 @@ def list_users(request: Request) -> dict[str, Any]:
     return {"items": [public_user(row) for row in rows]}
 
 
+@router.get("/api/users/me/authorizations")
+def get_my_authorizations(request: Request) -> dict[str, Any]:
+    conn = db()
+    user = require_user(conn, request)
+    payload = get_authorization(conn, user["id"])
+    conn.close()
+    return payload
+
+
+@router.patch("/api/users/me/authorizations")
+def update_my_authorizations(payload: ProfileAuthorizationUpdate, request: Request) -> dict[str, Any]:
+    conn = db()
+    user = require_user(conn, request)
+    compatibility_values = [
+        value for value in (payload.cross_project_profile, payload.collaboration_analysis, payload.history_visible)
+        if value is not None
+    ]
+    if compatibility_values and len(set(compatibility_values)) > 1:
+        conn.close()
+        fail(422, "VALIDATION_ERROR", "当前授权采用统一全局开关，三个兼容字段必须一致")
+    global_enabled = payload.global_enabled
+    if global_enabled is None and compatibility_values:
+        global_enabled = compatibility_values[0]
+    try:
+        result = update_authorization(
+            conn,
+            user["id"],
+            global_enabled=global_enabled,
+            project_overrides=payload.project_overrides,
+        )
+    except ValueError as exc:
+        conn.close()
+        fail(400, "BAD_REQUEST", str(exc))
+    conn.commit()
+    conn.close()
+    return result
+
+
+@router.delete("/api/users/me/profile-data")
+def delete_my_profile_data(request: Request) -> dict[str, Any]:
+    conn = db()
+    user = require_user(conn, request)
+    result = delete_derived_profile_data(conn, user["id"])
+    conn.commit()
+    conn.close()
+    return result
+
+
+@router.get("/api/users/me/profile")
+def get_my_profile(request: Request) -> dict[str, Any]:
+    conn = db()
+    current = require_user(conn, request)
+    profile = build_profile_internal(conn, current["id"], self_view=True)
+    conn.close()
+    return profile_payload(profile)
+
+
+@router.get("/api/users/me/collaborations")
+def get_my_collaborations(request: Request) -> dict[str, Any]:
+    conn = db()
+    current = require_user(conn, request)
+    payload = build_collaborations(conn, current["id"])
+    conn.close()
+    return payload
+
+
+@router.get("/api/users/me/recommendations")
+def get_my_long_term_recommendations(request: Request) -> dict[str, Any]:
+    conn = db()
+    current = require_user(conn, request)
+    payload = build_long_term_recommendations(conn, current["id"])
+    conn.close()
+    return payload
+
 @router.get("/api/users/{user_id}/profile")
 def get_user_profile(user_id: int, request: Request) -> dict[str, Any]:
     conn = db()
@@ -135,17 +211,22 @@ def get_user_profile(user_id: int, request: Request) -> dict[str, Any]:
     if not target:
         conn.close()
         fail(404, "NOT_FOUND", "用户不存在")
-    allowed = current["id"] == target["id"]
-    if not allowed:
-        same_project = conn.execute(
-            "SELECT 1 FROM memberships a JOIN memberships b ON a.project_id=b.project_id WHERE a.user_id=? AND b.user_id=? LIMIT 1",
-            (current["id"], target["id"]),
-        ).fetchone()
-        allowed = same_project is not None
-    if not allowed:
+    if current["id"] == target["id"]:
+        profile = build_profile_internal(conn, target["id"], self_view=True)
+        conn.close()
+        return profile_payload(profile)
+    same_project = conn.execute(
+        """SELECT a.project_id FROM memberships a
+           JOIN memberships b ON a.project_id=b.project_id
+           JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL
+           WHERE a.user_id=? AND b.user_id=? AND a.status='active' AND b.status='active'
+           ORDER BY a.project_id LIMIT 1""",
+        (current["id"], target["id"]),
+    ).fetchone()
+    if same_project is None:
         conn.close()
         fail(403, "FORBIDDEN", "无权查看该成员画像")
-    profile = build_profile_internal(conn, target["id"])
+    profile = build_profile_internal(conn, target["id"], authorized_only=True)
     conn.close()
     return profile_payload(profile)
 

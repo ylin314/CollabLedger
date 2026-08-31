@@ -47,3 +47,43 @@
 .profile-metric span{font-size:11px;color:#738097}
 .profile-error{color:#d96169;padding:12px 0}
 @media(max-width:1250px){.profile-grid{grid-template-columns:1fr}}
+/* D5 外部平台接入 */
+.integration-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}
+.integration-card{display:flex;flex-direction:column;align-items:flex-start;gap:7px;padding:12px;border:1px solid var(--line);border-radius:8px;background:#fafbfe}
+.integration-card p{margin:0;color:#6d7b91;font-size:10px;line-height:1.55}
+.integration-details{margin-top:10px;border-top:1px solid #edf0f4;padding-top:10px}
+.integration-details summary{cursor:pointer;color:#4e6491;font-size:11px;font-weight:700}
+.integration-form-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.integration-form-row input,.integration-form-row select{flex:1;min-width:150px;height:34px;border:1px solid var(--line);border-radius:7px;background:#fff;padding:0 9px;color:#53647c;font-size:10px}
+.integration-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;padding:8px 10px;border-radius:7px;background:#f6f8fc;font-size:10px}
+.integration-write-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+.integration-write-grid>div{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--line);border-radius:8px}
+.integration-write-grid input,.integration-write-grid textarea{width:100%;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px;color:#53647c;font-size:10px}
+.integration-write-grid textarea{min-height:70px;resize:vertical}
+@media(max-width:900px){.integration-grid{grid-template-columns:1fr}.integration-write-grid{grid-template-columns:1fr}}
+@media(max-width:520px){.integration-form-row{align-items:stretch;flex-direction:column}.integration-form-row input,.integration-form-row select,.integration-form-row button{width:100%;min-width:0}.integration-row{align-items:flex-start;flex-direction:column}}
+/* D6 长期画像与授权 */
+.profile-modal-wide{width:min(980px,calc(100vw - 40px));max-height:calc(100vh - 48px);overflow:auto}
+.profile-section{margin-top:16px;padding:16px;border:1px solid #e6ebf2;border-radius:14px;background:#fff}
+.profile-section h3,.profile-section h4{margin:0 0 10px}
+.profile-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.profile-section-head p{margin:4px 0 0;color:#738097;font-size:12px}
+.profile-switch{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:650}
+.authorization-panel{background:#f8fafc}
+.authorization-projects{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}
+.authorization-projects label{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px;border:1px solid #e6ebf2;border-radius:10px;background:#fff}
+.authorization-projects label>span{display:flex;min-width:0;flex-direction:column}
+.authorization-projects small{color:#738097}
+.authorization-projects select{max-width:120px}
+.compact-danger{margin-top:4px;padding:8px 12px}
+.profile-skill-row{margin-bottom:12px}
+.profile-skill-row>small{display:block;margin-top:3px;color:#738097}
+.source-chip-list{display:flex;flex-wrap:wrap;gap:7px}
+.source-chip-list span{padding:5px 8px;border-radius:999px;background:#eef2ff;color:#4f46e5;font-size:11px}
+.profile-notes-list{margin:12px 0;padding-left:18px;color:#596579;font-size:12px;line-height:1.7}
+.profile-two-columns{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.profile-list-item{display:flex;flex-direction:column;gap:4px;padding:10px 0;border-bottom:1px solid #eef1f5}
+.profile-list-item:last-child{border-bottom:0}
+.profile-list-item span{font-size:12px;color:#4c576a}
+.profile-list-item small{font-size:11px;color:#7b879a}
+@media(max-width:720px){.profile-modal-wide{width:calc(100vw - 20px);max-height:calc(100vh - 20px)}.authorization-projects,.profile-two-columns{grid-template-columns:1fr}.profile-section-head{flex-direction:column}.authorization-projects label{align-items:flex-start}.profile-grid{grid-template-columns:1fr}}

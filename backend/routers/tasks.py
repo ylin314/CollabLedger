@@ -137,17 +137,37 @@ def update_task(task_id: int, payload: TaskUpdate, request: Request = None) -> d
     conn.commit(); row = task_row(conn, task_id); out = as_task(row, conn); conn.close(); return out
 
 
+def assign_task_in_connection(conn, task_id: int, assignee_id: int, actor_id: Optional[int], note: Optional[str]) -> dict[str, Any]:
+    """在调用方事务内完成指派，供推荐采纳和 HTTP 指派共同复用。"""
+    row = task_row(conn, task_id)
+    ensure_member(conn, row["project_id"], assignee_id)
+    before = row["status"]
+    stamp = now_iso()
+    conn.execute(
+        "UPDATE tasks SET assignee_id=?,status='assigned',updated_at=? WHERE id=?",
+        (assignee_id, stamp, task_id),
+    )
+    sync_task_participants(conn, task_id, task_participant_ids(conn, task_id), assignee_id)
+    log = _task_log(conn, task_id, actor_id if actor_id is not None else assignee_id, "assigned", before, "assigned", note)
+    updated = task_row(conn, task_id)
+    result = as_task(updated, conn)
+    result["log"] = log
+    return result
+
 @router.post("/api/tasks/{task_id}/assign")
 def assign_task(task_id: int, payload: AssignIn = None, request: Request = None, user_id: Optional[int] = Query(default=None), note: Optional[str] = Query(default=None)) -> dict[str, Any]:  # type: ignore[assignment]
     # Query 参数兼容旧客户端；契约客户端使用 JSON body。
     assignee_id = payload.assignee_id if payload is not None else user_id
     assignment_note = payload.note if payload is not None else note
     if assignee_id is None: fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "assignee_id", "message": "负责人不能为空"}])
-    conn = db(); row = task_row(conn, task_id); project, user, _ = ensure_project_access(conn, row["project_id"], request, "member", allow_internal=request is None); ensure_writable(project); ensure_member(conn, row["project_id"], assignee_id)
-    before = row["status"]; stamp = now_iso(); conn.execute("UPDATE tasks SET assignee_id=?,status='assigned',updated_at=? WHERE id=?", (assignee_id, stamp, task_id))
-    sync_task_participants(conn, task_id, task_participant_ids(conn, task_id), assignee_id)
-    _task_log(conn, task_id, user["id"] if user is not None else assignee_id, "assigned", before, "assigned", assignment_note); conn.commit(); row = task_row(conn, task_id); out = as_task(row, conn); conn.close(); return out
-
+    conn = db()
+    row = task_row(conn, task_id)
+    project, user, _ = ensure_project_access(conn, row["project_id"], request, "member", allow_internal=request is None)
+    ensure_writable(project)
+    out = assign_task_in_connection(conn, task_id, assignee_id, user["id"] if user is not None else assignee_id, assignment_note)
+    conn.commit()
+    conn.close()
+    return out
 
 def _task_action(task_id: int, action: str, payload: TaskActionIn, request: Request, legacy_user_id: Optional[int] = None) -> dict[str, Any]:
     targets = {"start": "in_progress", "pause": "paused", "resume": "in_progress", "complete": "completed", "overdue": "overdue", "unfinished": "unfinished"}
@@ -281,4 +301,4 @@ def get_task_review_history(task_id: int, request: Request) -> dict[str, Any]:
     conn = db(); task = task_row(conn, task_id); ensure_project_access(conn, task["project_id"], request)
     rows = conn.execute("SELECT h.*,u.name reviewer_name FROM task_review_history h JOIN users u ON u.id=h.reviewer_id WHERE h.task_id=? ORDER BY h.id DESC", (task_id,)).fetchall(); conn.close(); return {"items": [dict(row) for row in rows]}
 
-__all__ = ['_task_log', 'list_tasks', 'create_task', 'get_task', 'update_task', 'assign_task', '_task_action', 'start_task', 'pause_task', 'resume_task', 'complete_task', 'overdue_task', 'unfinished_task', 'task_logs', 'delete_task', 'create_checkin', 'list_task_checkins', 'list_project_checkins', 'review_task', 'get_task_review', 'get_task_review_history']
+__all__ = ['_task_log', 'list_tasks', 'create_task', 'get_task', 'update_task', 'assign_task', 'assign_task_in_connection', '_task_action', 'start_task', 'pause_task', 'resume_task', 'complete_task', 'overdue_task', 'unfinished_task', 'task_logs', 'delete_task', 'create_checkin', 'list_task_checkins', 'list_project_checkins', 'review_task', 'get_task_review', 'get_task_review_history']

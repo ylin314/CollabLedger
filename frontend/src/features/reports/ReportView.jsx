@@ -1,15 +1,16 @@
 import { useEffect, useState } from "react";
 import { Download, RefreshCw } from "lucide-react";
-import { getJson } from "../../api/client";
+import { getJson, sendJson } from "../../api/client";
 import { initials } from "../../shared/core";
 import { PageTitle } from "../../shared/components";
 
-function ReportView({ project, report, memberStats, tasks, weekly, risks }) {
+function ReportView({ project, report, memberStats, tasks, weekly, risks, diagnostics }) {
   const [weeklyData, setWeeklyData] = useState(weekly);
   const [history, setHistory] = useState([]);
   const [exportFormat, setExportFormat] = useState("markdown");
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const riskError = diagnostics?.risksError || "";
   useEffect(() => {
     setWeeklyData(weekly);
   }, [weekly]);
@@ -49,9 +50,9 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks }) {
     setRefreshing(true);
     setError("");
     try {
-      const payload = await getJson(
-        `/api/projects/${project.id}/weekly-report?refresh=true`,
-      );
+      const payload = await sendJson(`/api/projects/${project.id}/weekly-report`, {
+        method: "POST",
+      });
       setWeeklyData(payload);
       const historyPayload = await getJson(
         `/api/projects/${project.id}/weekly-report/history`,
@@ -77,7 +78,6 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks }) {
               aria-label="报告导出格式"
             >
               <option value="markdown">Markdown</option>
-              <option value="pdf">PDF</option>
             </select>
             <button
               className="ghost-button icon-text-button"
@@ -118,22 +118,23 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks }) {
             </div>
             <button
               className="icon-button-inline"
-              title="重新生成本周周报"
+              title={currentWeekly?.exists ? "刷新本周周报" : "生成本周周报"}
               disabled={refreshing}
               onClick={refreshWeekly}
             >
               <RefreshCw size={14} />
-              {refreshing ? "生成中" : "重新生成"}
+              {refreshing ? "生成中" : currentWeekly?.exists ? "刷新周报" : "生成周报"}
             </button>
           </div>
           <ul className="fact-list">
             <li>完成 {currentWeekly?.summary?.tasks_completed ?? 0} 项</li>
             <li>进行中 {currentWeekly?.summary?.tasks_in_progress ?? 0} 项</li>
             <li>延期 {currentWeekly?.summary?.tasks_overdue ?? 0} 项</li>
-            <li>
-              打卡 {currentWeekly?.summary?.checkin_count ?? 0} 次 /{" "}
-              {currentWeekly?.summary?.actual_hours ?? 0} 小时
-            </li>
+            <li>确认贡献 {currentWeekly?.summary?.contribution_count ?? 0} 项</li>
+            <li>待确认 {currentWeekly?.summary?.pending_contribution_count ?? 0} 项</li>
+            <li>打卡工时 {currentWeekly?.summary?.checkin_hours ?? 0}h</li>
+            <li>任务工时 {currentWeekly?.summary?.task_hours ?? 0}h</li>
+            <li>有效工时 {currentWeekly?.summary?.actual_hours ?? 0}h（打卡优先）</li>
           </ul>
           {currentWeekly?.insight && (
             <p className="weekly-insight">{currentWeekly.insight}</p>
@@ -168,19 +169,28 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks }) {
               </p>
             </div>
             <span className="source-label">
-              {risks?.summary_source === "llm" ? "AI 总结" : "规则总结"}
+              {risks?.summary_source === "llm"
+                ? "AI 总结"
+                : risks?.llm_status === "failed"
+                  ? "AI 失败，规则回退"
+                  : "规则总结"}
             </span>
           </div>
           <div className="risk-list">
-            {(risks?.risks || []).length ? (
+            {riskError ? (
+              <div className="form-error">风险数据加载失败：{riskError}</div>
+            ) : (risks?.risks || []).length ? (
               (risks.risks || []).map((item, index) => (
                 <div
                   className={`risk-item ${item.level}`}
-                  key={`${item.type}-${index}`}
+                  key={`${item.type}-${item.task_id || item.user_id || index}`}
                 >
                   <strong>{item.message}</strong>
                   <span>
                     严重度 {item.severity ?? "—"} · {item.rule}
+                    {item.weighted_load != null
+                      ? ` · 加权负载 ${item.weighted_load}`
+                      : ""}
                   </span>
                 </div>
               ))
@@ -188,6 +198,9 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks }) {
               <div className="empty-state">暂无明显风险</div>
             )}
           </div>
+          {risks?.llm_status === "failed" && risks?.llm_error && (
+            <p className="muted-note">AI 风险总结失败：{risks.llm_error}</p>
+          )}
         </section>
       </div>
       <div className="report-grid">
@@ -242,16 +255,23 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks }) {
             </div>
           </div>
           <div className="weekly-member-list">
-            {(currentWeekly?.members || rows).map((item) => (
+            {(currentWeekly?.exists ? currentWeekly.members || [] : []).map((item) => (
               <div className="weekly-member-row" key={item.user_id}>
                 <strong>{item.name}</strong>
                 <span>
-                  完成 {item.completed_tasks ?? item.tasks_completed ?? 0} 项 ·
-                  工时 {item.actual_hours || 0}h
+                  完成 {item.completed_tasks ?? 0} 项 · 确认贡献 {item.contribution_count ?? 0} 项 ·
+                  待确认 {item.pending_contribution_count ?? 0} 项
+                </span>
+                <span>
+                  打卡工时 {item.checkin_hours ?? 0}h · 任务工时 {item.task_hours ?? 0}h ·
+                  有效工时 {item.actual_hours ?? 0}h（{item.hours_source === "checkin" ? "打卡优先" : "任务工时"}）
                 </span>
                 {item.summary && <p>{item.summary}</p>}
               </div>
             ))}
+            {!currentWeekly?.exists && (
+              <div className="empty-state">尚未生成本周期周报，请点击“生成周报”。</div>
+            )}
           </div>
           <p className="muted-note">
             画像与跨项目推荐属于阶段四，当前只展示本项目事实。

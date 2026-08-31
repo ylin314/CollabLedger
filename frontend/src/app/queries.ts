@@ -18,6 +18,10 @@ export interface WorkspacePayload {
   risks: Record<string, unknown> | null;
   memberLoad: Record<string, unknown> | null;
   weekly: Record<string, unknown> | null;
+  diagnostics: {
+    risksError: string | null;
+    memberLoadError: string | null;
+  };
 }
 
 async function optionalJson(url: string) {
@@ -29,6 +33,20 @@ async function optionalJson(url: string) {
   }
 }
 
+async function diagnosticJson(url: string) {
+  try {
+    return {
+      data: await getJson<Record<string, unknown>>(url),
+      error: null,
+    };
+  } catch (error) {
+    if ((error as { status?: number }).status === 401) throw error;
+    return {
+      data: null,
+      error: (error as { message?: string }).message || "接口加载失败",
+    };
+  }
+}
 export const projectListQuery = queryOptions({
   queryKey: ["projects"],
   staleTime: 0,
@@ -59,12 +77,14 @@ export function workspaceQuery(projectId: number) {
             `/api/projects/${projectId}/contributions?page_size=100`,
           ),
         ]);
-      const [report, risks, memberLoad, weekly] = await Promise.all([
+      const [report, riskResult, loadResult, weekly] = await Promise.all([
         optionalJson(`/api/projects/${projectId}/report`),
-        optionalJson(`/api/projects/${projectId}/risks`),
-        optionalJson(`/api/projects/${projectId}/members/load`),
+        diagnosticJson(`/api/projects/${projectId}/risks`),
+        diagnosticJson(`/api/projects/${projectId}/members/load`),
         optionalJson(`/api/projects/${projectId}/weekly-report`),
       ]);
+      const risks = riskResult.data;
+      const memberLoad = loadResult.data;
       const loadMembers = Array.isArray(memberLoad?.members)
         ? memberLoad.members
         : [];
@@ -98,6 +118,10 @@ export function workspaceQuery(projectId: number) {
         risks,
         memberLoad,
         weekly,
+        diagnostics: {
+          risksError: riskResult.error,
+          memberLoadError: loadResult.error,
+        },
       };
     },
   });

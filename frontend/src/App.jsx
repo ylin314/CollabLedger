@@ -14,6 +14,7 @@ import {
   Sparkles,
   TimerReset,
   Users,
+  UserRound,
   History,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -48,6 +49,7 @@ import { ProjectSettingsView } from "./features/projects/ProjectSettingsView";
 import { InviteAcceptView } from "./features/invitations/InviteAcceptView";
 import { HistoryProjectsView } from "./features/projects/HistoryProjectsView";
 import { ClassroomsView } from "./features/classrooms/ClassroomsView";
+import { ProfileModal } from "./features/profile/ProfileModal";
 import { projectListQuery, workspaceQuery } from "./app/queries";
 import { taskPermissions } from "./app/permissions";
 
@@ -76,11 +78,13 @@ function App() {
   const [risks, setRisks] = useState(null);
   const [memberLoad, setMemberLoad] = useState(null);
   const [weekly, setWeekly] = useState(null);
+  const [workspaceDiagnostics, setWorkspaceDiagnostics] = useState({});
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [online, setOnline] = useState(Boolean(auth));
   const [showTask, setShowTask] = useState(false);
   const [recommendTask, setRecommendTask] = useState(null);
+  const [showMyProfile, setShowMyProfile] = useState(false);
 
   const [reviewTask, setReviewTask] = useState(null);
   const [toast, setToast] = useState("");
@@ -97,6 +101,7 @@ function App() {
       setRisks(null);
       setMemberLoad(null);
       setWeekly(null);
+      setWorkspaceDiagnostics({});
       setLoadError("");
       queryClient.clear();
       routerNavigate("/login", { replace: true });
@@ -149,6 +154,7 @@ function App() {
         setRisks(null);
         setMemberLoad(null);
         setWeekly(null);
+        setWorkspaceDiagnostics({});
         setOnline(true);
         if (route.page !== "classrooms" && window.location.hash !== "#/projects/new")
           routerNavigate(routePath(null, "new"), { replace: true });
@@ -160,10 +166,13 @@ function App() {
       setRisks(workspace.risks);
       setMemberLoad(workspace.memberLoad);
       setWeekly(workspace.weekly);
+      setWorkspaceDiagnostics(workspace.diagnostics || {});
       setOnline(true);
       localStorage.setItem("collab_project_id", String(selectedId));
-      if (route.projectId !== selectedId) {
-        const page = route.page === "new" ? "overview" : route.page;
+      // 读取异步请求完成时的实际路由，避免创建项目后的旧闭包覆盖用户刚点击的页面。
+      const currentRoute = readRoute(window.location.hash);
+      if (currentRoute.projectId !== selectedId) {
+        const page = currentRoute.page === "new" ? "overview" : currentRoute.page;
         routerNavigate(routePath(selectedId, page), { replace: true });
       }
     } catch (error) {
@@ -189,6 +198,7 @@ function App() {
       setRisks(null);
       setMemberLoad(null);
       setWeekly(null);
+      setWorkspaceDiagnostics({});
       queryClient.clear();
       routerNavigate("/login", { replace: true });
     }
@@ -298,6 +308,12 @@ function App() {
       />
     );
   if (route.page === "classrooms") return <ClassroomsView currentUser={auth} onToast={setToast} onBack={() => routerNavigate(project?.id ? routePath(project.id, "overview") : "/projects/new")} />;
+  if (loading && !project)
+    return (
+      <div className="auth-screen">
+        <div className="loading-state">正在加载项目工作区…</div>
+      </div>
+    );
   if (!loading && loadError && !project)
     return (
       <div className="app-error-screen">
@@ -414,6 +430,7 @@ function App() {
     setRisks(null);
     setMemberLoad(null);
     setWeekly(null);
+    setWorkspaceDiagnostics({});
     routerNavigate(routePath(null, "new"), { replace: true });
   }
 
@@ -475,6 +492,9 @@ function App() {
               <TimerReset aria-hidden="true" /> 今日打卡
             </button>
           )}
+          <button className="side-tool" onClick={() => setShowMyProfile(true)}>
+            <UserRound aria-hidden="true" /> 我的长期画像
+          </button>
           <button className="side-tool" onClick={() => navigate("new")}>
             <Plus aria-hidden="true" /> 新建项目
           </button>
@@ -546,6 +566,7 @@ function App() {
                   risks={risks}
                   weekly={weekly}
                   memberLoad={memberLoad}
+                  diagnostics={workspaceDiagnostics}
                   onNavigate={navigate}
                   onAction={taskAction}
                   onRecommend={setRecommendTask}
@@ -583,6 +604,7 @@ function App() {
                   project={project}
                   members={members}
                   canWrite={canWrite}
+                  currentUserId={auth?.id}
                   onRecommend={setRecommendTask}
                   onToast={setToast}
                   setProject={setProject}
@@ -610,6 +632,7 @@ function App() {
                   tasks={tasks}
                   weekly={weekly}
                   risks={risks}
+                  diagnostics={workspaceDiagnostics}
                 />
               )}{" "}
               {active === "agent" && (
@@ -689,6 +712,7 @@ function App() {
           onClose={() => setRecommendTask(null)}
           onToast={setToast}
           setProject={setProject}
+          currentUserId={auth?.id}
         />
       )}{" "}
       {reviewTask && (
@@ -709,6 +733,9 @@ function App() {
           }}
         />
       )}{" "}
+      {showMyProfile && (
+        <ProfileModal user={auth} isSelf onClose={() => setShowMyProfile(false)} />
+      )}
       {toast && <div className="toast"><BookOpenCheck aria-hidden="true" /> {toast}</div>}
     </div>
   );

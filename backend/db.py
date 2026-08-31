@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.models import Base
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = r'''
 CREATE TABLE IF NOT EXISTS users (
@@ -138,8 +138,8 @@ CREATE TABLE IF NOT EXISTS agent_memory (
 );
 CREATE TABLE IF NOT EXISTS platform_connections (
  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, platform TEXT NOT NULL,
- external_account_id TEXT, credentials_ref TEXT, status TEXT NOT NULL DEFAULT 'active',
- created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ external_account_id TEXT, external_username TEXT, credentials_ref TEXT, scopes TEXT NOT NULL DEFAULT '[]',
+ status TEXT NOT NULL DEFAULT 'active', connected_at TEXT, last_synced_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS project_integrations (
@@ -212,6 +212,22 @@ CREATE TABLE IF NOT EXISTS weekly_reports (
  UNIQUE(project_id, period_start, period_end),
  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_states (
+ state TEXT PRIMARY KEY, user_id INTEGER NOT NULL, platform TEXT NOT NULL, session_hash TEXT NOT NULL,
+ redirect_uri TEXT, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, consumed_at TEXT,
+ FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS profile_authorizations (
+ user_id INTEGER PRIMARY KEY, global_enabled INTEGER NOT NULL DEFAULT 1,
+ retention_mode TEXT NOT NULL DEFAULT 'retained', deleted_at TEXT, updated_at TEXT NOT NULL,
+ FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS profile_project_authorizations (
+ user_id INTEGER NOT NULL, project_id INTEGER NOT NULL, enabled INTEGER NOT NULL, updated_at TEXT NOT NULL,
+ PRIMARY KEY(user_id,project_id),
+ FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+ FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 '''
 
@@ -418,6 +434,8 @@ def _initialize_postgresql(path: str | Path | None = None) -> None:
             "tasks": {"reviewer_id": "INTEGER"},
             "project_invitations": {"is_mentor": "INTEGER NOT NULL DEFAULT 0"},
             "task_review_history": {"updated_at": "VARCHAR(40)"},
+            "platform_connections": {"external_username": "VARCHAR(255)", "scopes": "TEXT NOT NULL DEFAULT '[]'", "connected_at": "VARCHAR(40)", "last_synced_at": "VARCHAR(40)"},
+            "oauth_states": {"session_hash": "VARCHAR(64)"},
         }
         for table, definitions in additions.items():
             existing = {column["name"] for column in inspector.get_columns(table)}
@@ -449,6 +467,8 @@ def initialize(path: str | Path | None = None) -> None:
     _add_columns(conn, "project_invitations", {"max_uses": "INTEGER NOT NULL DEFAULT 1", "used_count": "INTEGER NOT NULL DEFAULT 0", "revoked": "INTEGER NOT NULL DEFAULT 0", "revoked_at": "TEXT", "updated_at": "TEXT", "is_mentor": "INTEGER NOT NULL DEFAULT 0"})
     _add_columns(conn, "contributions", {"evidence_url": "TEXT", "status": "TEXT NOT NULL DEFAULT 'pending'", "source": "TEXT NOT NULL DEFAULT 'manual'", "occurred_at": "TEXT", "updated_at": "TEXT", "created_by": "INTEGER", "confirmed_by": "INTEGER", "confirmed_at": "TEXT", "confirmation_note": "TEXT", "dispute_note": "TEXT", "deleted_at": "TEXT"})
     _add_columns(conn, "agent_memory", {"user_id": "INTEGER"})
+    _add_columns(conn, "platform_connections", {"external_username": "TEXT", "scopes": "TEXT NOT NULL DEFAULT '[]'", "connected_at": "TEXT", "last_synced_at": "TEXT"})
+    _add_columns(conn, "oauth_states", {"session_hash": "TEXT"})
     _add_columns(conn, "recommendations", {
         "mode": "TEXT NOT NULL DEFAULT 'single'",
         "status": "TEXT NOT NULL DEFAULT 'generated'",

@@ -28,6 +28,7 @@ function Overview({
   risks,
   weekly,
   memberLoad,
+  diagnostics,
   onNavigate,
   onAction,
   onRecommend,
@@ -35,24 +36,32 @@ function Overview({
   canManageTask,
 }) {
   const [profileMember, setProfileMember] = useState(null);
+  const riskError = diagnostics?.risksError || "";
+  const loadError = diagnostics?.memberLoadError || "";
   const riskCount = risks?.count ?? (risks?.risks || []).length;
   const highLoad = (memberLoad?.members || []).filter(
-    (item) => item.load_level === "high",
+    (item) => item.weighted_level === "high",
   );
   const highLoadNames = highLoad.map((item) => item.name).join("、");
-  const reminderTitle = highLoad.length
-    ? `${highLoadNames}的任务已经排满`
+  const reminderTitle = riskError || loadError
+    ? "风险或负载数据加载失败"
+    : highLoad.length
+      ? `${highLoadNames}的加权负载偏高`
+      : riskCount
+        ? `${riskCount} 件事需要确认`
+        : "本周进度正常";
+  const reminderCopy = riskError || loadError
+    ? "当前无法判断项目是否安全，请刷新后重试，不能把接口故障当作暂无风险。"
+    : highLoad.length
+      ? "先确认现有任务的优先级，再决定是否继续安排新任务。"
+      : riskCount
+        ? "有任务的负责人或截止时间需要确认。"
+        : "目前没有需要特别处理的事项。";
+  const reminderSummary = riskError || loadError
+    ? "数据不可用"
     : riskCount
-      ? `${riskCount} 件事需要确认`
-      : "本周进度正常";
-  const reminderCopy = highLoad.length
-    ? "先确认现有任务的优先级，再决定是否继续安排新任务。"
-    : riskCount
-      ? "有任务的负责人或截止时间需要确认。"
-      : "目前没有需要特别处理的事项。";
-  const reminderSummary = riskCount
-    ? `${riskCount} 项待确认${highLoad.length ? `，${highLoadNames}暂不适合接新任务` : ""}`
-    : "暂无待处理事项";
+      ? `${riskCount} 项待确认${highLoad.length ? `，${highLoadNames}暂不适合接新任务` : ""}`
+      : "暂无待处理事项";
   const weeklyHint = weekly
     ? `本周完成 ${weekly.summary?.tasks_completed || 0} 项，打卡 ${weekly.summary?.checkin_count || 0} 次`
     : "周报数据加载中";
@@ -72,6 +81,13 @@ function Overview({
           ) : null
         }
       />
+      {(riskError || loadError) && (
+        <div className="form-error">
+          {riskError && <span>风险数据加载失败：{riskError}</span>}
+          {riskError && loadError && "；"}
+          {loadError && <span>负载数据加载失败：{loadError}</span>}
+        </div>
+      )}
       <div className="overview-grid">
         <section className="hero-card">
           <div className="hero-copy">
@@ -115,8 +131,8 @@ function Overview({
           />
           <Metric
             label="需要关注"
-            value={riskCount}
-            hint={riskCount ? reminderCopy : "目前无需处理"}
+            value={riskError ? "—" : riskCount}
+            hint={riskError ? "风险接口不可用" : riskCount ? reminderCopy : "目前无需处理"}
             trend={riskCount ? "down" : "neutral"}
             color="red"
           />

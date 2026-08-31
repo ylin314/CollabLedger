@@ -145,15 +145,17 @@ python scripts/seed_stage2_demo.py
 $env:COLLAB_DB = "$PWD\collab.db"
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
-# 生成本周(首次)并落库
+# 查询本周：只读，不存在时返回 exists=false，不会落库
 Invoke-RestMethod 'http://127.0.0.1:8000/api/projects/1/weekly-report'
-# 再次调用应 stored=true 且数据一致
-# 回看:上周周报(如没有会生成)
+# 周报页面明确点击生成/刷新后用 POST 落库；重复 POST 不产生重复行
+Invoke-RestMethod 'http://127.0.0.1:8000/api/projects/1/weekly-report' -Method Post
+# 回看上周：GET 只读；需要生成时由页面对同周期 POST
 Invoke-RestMethod 'http://127.0.0.1:8000/api/projects/1/weekly-report?week_start=2026-08-17'
+Invoke-RestMethod 'http://127.0.0.1:8000/api/projects/1/weekly-report?week_start=2026-08-17' -Method Post
 # 历史
 Invoke-RestMethod 'http://127.0.0.1:8000/api/projects/1/weekly-report/history'
-# 强制刷新
-Invoke-RestMethod 'http://127.0.0.1:8000/api/projects/1/weekly-report?refresh=1'
+# 强制刷新：周报页再次点击按钮，使用同一路径 POST
+Invoke-RestMethod 'http://127.0.0.1:8000/api/projects/1/weekly-report' -Method Post
 ```
 
 ## 7. 完成标志

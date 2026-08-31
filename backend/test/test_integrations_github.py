@@ -21,7 +21,6 @@ def _account(client: TestClient, name: str, email: str) -> dict:
 def _setup(monkeypatch, tmp_path, filename: str):
     monkeypatch.setattr(api, "DB_PATH", tmp_path / filename)
     api.init_db()
-    monkeypatch.setattr(gi, "_pending_states", {})
     monkeypatch.setenv("GITHUB_CLIENT_ID", "cid-test")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "secret-test")
     monkeypatch.setenv("COLLAB_FRONTEND_BASE", "https://testserver")
@@ -31,7 +30,7 @@ def _project(client: TestClient) -> int:
     return client.post("/api/projects", json={"name": "GitHub 接入项目"}).json()["id"]
 
 
-def _fake_github(monkeypatch, *, commits=None, pulls=None, fail=False):
+def _fake_github(monkeypatch, *, commits=None, pulls=None, issues=None, reviews=None, fail=False, fail_repos=()):
     """fail=True 只让 commits/pulls 抛网络错误；OAuth 换 token 与 /user 始终可用。"""
 
     def fake_post(url, **kwargs):
@@ -39,14 +38,22 @@ def _fake_github(monkeypatch, *, commits=None, pulls=None, fail=False):
         return httpx.Response(200, json={"access_token": "gh-token", "token_type": "bearer"}, request=httpx.Request("POST", url))
 
     def fake_get(url, headers=None, params=None, **kwargs):
-        if fail and (url.endswith("/commits") or url.endswith("/pulls")):
+        should_fail = fail or any(f"/repos/{repo}/" in url for repo in fail_repos)
+        if should_fail and (url.endswith("/commits") or "/commits/" in url or url.endswith("/pulls") or url.endswith("/issues") or url.endswith("/reviews")):
             raise httpx.ConnectError("network down")
         if url.endswith("/user"):
             return httpx.Response(200, json={"id": 900001, "login": "rxc-test"}, request=httpx.Request("GET", url))
+        if "/commits/" in url:
+            sha = url.rsplit("/", 1)[-1]
+            return httpx.Response(200, json={"sha": sha, "stats": {"additions": 12, "deletions": 3}}, request=httpx.Request("GET", url))
         if url.endswith("/commits"):
             return httpx.Response(200, json=commits if commits is not None else [], request=httpx.Request("GET", url))
         if url.endswith("/pulls"):
             return httpx.Response(200, json=pulls if pulls is not None else [], request=httpx.Request("GET", url))
+        if url.endswith("/issues"):
+            return httpx.Response(200, json=issues if issues is not None else [], request=httpx.Request("GET", url))
+        if url.endswith("/reviews"):
+            return httpx.Response(200, json=reviews if reviews is not None else [], request=httpx.Request("GET", url))
         raise AssertionError(url)
 
     monkeypatch.setattr(gi.httpx, "post", fake_post)
@@ -76,7 +83,10 @@ def test_auth_url_requires_config_or_returns_state(monkeypatch, tmp_path):
     payload = owner.get("/api/integrations/github/auth-url").json()
     assert payload["configured"] is True
     assert payload["url"].startswith("https://github.com/login/oauth/authorize?")
-    assert payload["state"] in gi._pending_states
+    conn = api.db()
+    persisted = conn.execute("SELECT user_id,platform,consumed_at FROM oauth_states WHERE state=?", (payload["state"],)).fetchone()
+    conn.close()
+    assert persisted["user_id"] == user["id"] and persisted["platform"] == "github" and persisted["consumed_at"] is None
 
     monkeypatch.setenv("GITHUB_CLIENT_ID", "")
     payload = owner.get("/api/integrations/github/auth-url").json()
@@ -96,8 +106,15 @@ def test_callback_rejects_invalid_state_and_connects_on_success(monkeypatch, tmp
     assert ok.status_code == 307 and "connected=rxc-test" in ok.headers["location"]
 
     status = owner.get("/api/integrations/github/status").json()
-    assert status["connected"] is True and status["account"] == "900001"
+    assert status["connected"] is True and status["account"] == "rxc-test"
     assert "gh-token" not in json.dumps(status)
+    conn = api.db()
+    stored = conn.execute("SELECT credentials_ref FROM platform_connections WHERE user_id=?", (user["id"],)).fetchone()["credentials_ref"]
+    consumed = conn.execute("SELECT consumed_at FROM oauth_states WHERE state=?", (created["state"],)).fetchone()["consumed_at"]
+    conn.close()
+    assert stored != "gh-token" and "gh-token" not in stored and consumed
+    replay = owner.get("/api/integrations/github/callback", params={"code": "abc", "state": created["state"]})
+    assert "invalid_state" in replay.headers["location"]
 
 
 def test_sync_creates_deduplicates_and_respects_permission(monkeypatch, tmp_path):
@@ -145,19 +162,28 @@ def test_sync_failure_records_sync_job_error(monkeypatch, tmp_path):
     conn = api.db()
     row = conn.execute("SELECT status,error FROM sync_jobs ORDER BY id DESC LIMIT 1").fetchone()
     conn.close()
-    assert row["status"] == "failed" and "network down" in row["error"]
+    assert row["status"] == "failed" and "网络请求失败" in row["error"] and "network down" not in row["error"]
 
 
-def test_disconnect_removes_connection(monkeypatch, tmp_path):
+def test_disconnect_revokes_connection_and_preserves_history(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, "disconnect.db")
     _fake_github(monkeypatch)
     owner = _client(); _account(owner, "组长", "disconnect-owner@example.com")
     state = owner.get("/api/integrations/github/auth-url").json()
     owner.get("/api/integrations/github/callback", params={"code": "abc", "state": state["state"]})
     assert owner.get("/api/integrations/github/status").json()["connected"] is True
+    pid = _project(owner)
+    owner.post(f"/api/projects/{pid}/integrations/github/sync", json={"config": {"repos": ["demo/repo"]}})
     assert owner.post("/api/integrations/github/disconnect").status_code == 200
     status = owner.get("/api/integrations/github/status").json()
     assert status["connected"] is False and status["projects"] == []
+    conn = api.db()
+    connection = conn.execute("SELECT status,credentials_ref FROM platform_connections ORDER BY id DESC LIMIT 1").fetchone()
+    integration_count = conn.execute("SELECT COUNT(*) n FROM project_integrations").fetchone()["n"]
+    event_count = conn.execute("SELECT COUNT(*) n FROM external_events").fetchone()["n"]
+    conn.close()
+    assert connection["status"] == "revoked" and connection["credentials_ref"] is None
+    assert integration_count == 1 and event_count == 0
 
 def test_callback_missing_params_redirects_with_flag(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, "callback-missing.db")
@@ -202,3 +228,105 @@ def test_disconnect_then_status_not_connected(monkeypatch, tmp_path):
     assert owner.post("/api/integrations/github/disconnect").status_code == 200
     status = owner.get("/api/integrations/github/status").json()
     assert status["connected"] is False and status["projects"] == []
+
+
+def test_oauth_state_is_user_bound_and_survives_memory_reset(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "state-bound.db")
+    _fake_github(monkeypatch)
+    owner, other = _client(), _client()
+    _account(owner, "Owner", "state-owner@example.com")
+    _account(other, "Other", "state-other@example.com")
+    state = owner.get("/api/integrations/github/auth-url").json()["state"]
+    wrong_user = other.get("/api/integrations/github/callback", params={"code": "abc", "state": state})
+    assert "invalid_state" in wrong_user.headers["location"]
+    correct_user = owner.get("/api/integrations/github/callback", params={"code": "abc", "state": state})
+    assert "connected=rxc-test" in correct_user.headers["location"]
+
+
+def test_fernet_secret_change_cannot_decrypt(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN_SECRET", "first-secret")
+    encrypted = gi._encrypt("sensitive-token")
+    assert "sensitive-token" not in encrypted
+    monkeypatch.setenv("GITHUB_TOKEN_SECRET", "second-secret")
+    assert gi._decrypt(encrypted) is None
+
+
+def test_member_cannot_trigger_owner_sync(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "member-sync.db")
+    _fake_github(monkeypatch)
+    owner, member = _client(), _client()
+    owner_user = _account(owner, "Owner", "owner-member-sync@example.com")
+    member_user = _account(member, "Member", "member-sync@example.com")
+    pid = _project(owner)
+    conn = api.db()
+    conn.execute("INSERT INTO memberships(project_id,user_id,role,joined_at,status,updated_at) VALUES (?,?,'member',?,'active',?)", (pid, member_user["id"], gi._now(), gi._now()))
+    conn.commit(); conn.close()
+    state = member.get("/api/integrations/github/auth-url").json()["state"]
+    member.get("/api/integrations/github/callback", params={"code": "abc", "state": state})
+    response = member.post(f"/api/projects/{pid}/integrations/github/sync", json={"config": {"repos": ["demo/repo"]}})
+    assert response.status_code == 403
+
+
+def test_sync_preserves_partial_success(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "partial-sync.db")
+    _fake_github(monkeypatch, commits=_COMMIT, pulls=[], fail_repos=("bad/repo",))
+    owner = _client(); user = _account(owner, "Owner", "partial-owner@example.com")
+    pid = _project(owner)
+    state = owner.get("/api/integrations/github/auth-url").json()["state"]
+    owner.get("/api/integrations/github/callback", params={"code": "abc", "state": state})
+    response = owner.post(f"/api/projects/{pid}/integrations/github/sync", json={"config": {"repos": ["demo/repo", "bad/repo"], "logins": {"rxc-test": user["id"]}}})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "partial" and payload["created"] == 1 and len(payload["errors"]) == 1
+    conn = api.db()
+    job = conn.execute("SELECT status,error FROM sync_jobs ORDER BY id DESC LIMIT 1").fetchone()
+    contributions = conn.execute("SELECT COUNT(*) n FROM contributions WHERE project_id=? AND source='github'", (pid,)).fetchone()["n"]
+    conn.close()
+    assert job["status"] == "partial" and contributions == 1
+
+
+def test_production_requires_token_secret(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "prod-secret.db")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("GITHUB_TOKEN_SECRET", raising=False)
+    owner = _client(); _account(owner, "Owner", "prod-secret@example.com")
+    payload = owner.get("/api/integrations/github/auth-url").json()
+    assert payload["configured"] is False and "GITHUB_TOKEN_SECRET" in payload["message"]
+
+
+def test_oauth_state_is_bound_to_exact_login_session(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "state-session.db")
+    _fake_github(monkeypatch)
+    first = _client(); user = _account(first, "Owner", "session-bound@example.com")
+    second = _client()
+    assert second.post("/api/auth/login", json={"email": "session-bound@example.com", "password": "password-123"}).status_code == 200
+    state = first.get("/api/integrations/github/auth-url").json()["state"]
+    wrong_session = second.get("/api/integrations/github/callback", params={"code": "abc", "state": state})
+    assert "invalid_state" in wrong_session.headers["location"]
+    correct_session = first.get("/api/integrations/github/callback", params={"code": "abc", "state": state})
+    assert "connected=rxc-test" in correct_session.headers["location"]
+
+
+def test_sync_collects_real_diff_statistics(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "diff-stats.db")
+    _fake_github(monkeypatch, commits=_COMMIT, pulls=_PULL)
+    owner = _client(); owner_user = _account(owner, "组长", "diff-owner@example.com")
+    pid = _project(owner)
+    state = owner.get("/api/integrations/github/auth-url").json()
+    owner.get("/api/integrations/github/callback", params={"code": "abc", "state": state["state"]})
+
+    config = {"repos": ["demo/repo"], "logins": {"rxc-test": owner_user["id"]}}
+    first = owner.post(f"/api/projects/{pid}/integrations/github/sync", json={"config": config}).json()
+    assert first["diff_details"] == 1 and first["diff_detail_limit"] >= 1
+
+    stats = owner.get(f"/api/projects/{pid}/github/statistics").json()
+    member = next(m for m in stats["members"] if m["user_id"] == owner_user["id"])
+    assert member["commits"] == 1 and member["additions"] == 12 and member["deletions"] == 3
+    assert member["pull_requests"] == 1 and member["issues"] == 0
+
+    # 去重同步不重复请求 diff 详情，统计保持稳定
+    second = owner.post(f"/api/projects/{pid}/integrations/github/sync", json={"config": config}).json()
+    assert second["created"] == 0 and second["diff_details"] == 0
+    stats_again = owner.get(f"/api/projects/{pid}/github/statistics").json()
+    member_again = next(m for m in stats_again["members"] if m["user_id"] == owner_user["id"])
+    assert member_again["additions"] == 12 and member_again["deletions"] == 3
