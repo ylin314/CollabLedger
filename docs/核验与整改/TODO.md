@@ -100,7 +100,7 @@
 - [ ] 真实 PostgreSQL：Alembic upgrade/current、建表、写读、重启、备份恢复。
 - [x] 【2026-08-31】Docker compose 部署验收通过：构建→healthcheck healthy→静态前端托管 200→注册/登录/建项目 API smoke→容器重启后数据持久化（命名卷）；修复 entrypoint.sh CRLF 导致容器无法启动的可移植性缺陷（Dockerfile 构建时清 CR + .gitattributes 强制 *.sh LF）；compose 已透传 D5 环境变量。
 - [ ] HTTPS/CORS/Secure Cookie/Trust Proxy/LLM env 在真实反代环境验证；无域名证书时记录外部阻塞。
-- [ ] 备份恢复演练后核对登录、项目、任务、贡献、审计日志。
+- [x] 【2026-08-31 演练通过】容器备份→API 破坏（删任务/贡献 204）→restore.ps1 恢复（自动 pre-restore 安全备份）→integrity ok→healthcheck healthy→登录/项目/任务/贡献全部恢复一致。
 - [ ] CI 增加必要的 compile/migration/contract 门禁，但不把外部密钥放进 CI。
 - [ ] 修正演示手册与实现状态（disputed、GitHub 回调、source 徽标、画像授权）。
 - [ ] 15 分钟演示从 seed 到收尾真实走查，未实现能力明确标红，不用假数据。
