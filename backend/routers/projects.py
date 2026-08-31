@@ -165,7 +165,8 @@ def add_member(project_id: int, payload: MemberIn, request: Request) -> dict[str
 def list_members(project_id: int, request: Request) -> dict[str, Any]:
     conn = db(); ensure_project_access(conn, project_id, request)
     rows = conn.execute(
-        """SELECT m.user_id,u.name,u.email,m.role,u.skills,u.max_concurrent_tasks,u.status,m.joined_at,
+        """SELECT m.user_id,u.name,u.email,m.role,u.skills,u.max_concurrent_tasks,u.status,u.avatar_url,m.joined_at,
+        (SELECT pc.external_username FROM platform_connections pc WHERE pc.user_id=m.user_id AND pc.platform='github' AND pc.status='active' ORDER BY pc.id DESC LIMIT 1) github_username,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id=m.project_id AND t.assignee_id=m.user_id AND t.deleted_at IS NULL AND t.status IN ('assigned','in_progress','paused','overdue')) current_task_count
         FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.status='active' ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'member' THEN 1 ELSE 2 END,m.joined_at""", (project_id,)
     ).fetchall(); conn.close()

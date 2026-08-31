@@ -1,4 +1,4 @@
-import { CalendarDays, Clock3, Plus } from "lucide-react";
+import { CalendarDays, Clock3, Plus, GitBranch } from "lucide-react";
 import {
   avatarColors,
   dimLabel,
@@ -57,7 +57,7 @@ function MemberCard({ member, index, onProfile }) {
           className={`avatar avatar-${index % avatarColors.length}`}
           style={{ background: avatarColors[index % avatarColors.length] }}
         >
-          {initials(member.name)}
+          {member.avatar_url ? <img className="avatar-image" src={member.avatar_url} alt="" /> : initials(member.name)}
         </div>
         <div>
           <strong>{member.name}</strong>
@@ -90,6 +90,11 @@ function MemberCard({ member, index, onProfile }) {
           <button className="profile-link" onClick={() => onProfile(member)}>
             画像
           </button>
+        )}
+        {member.github_username && (
+          <a className="github-link" href={`https://github.com/${encodeURIComponent(member.github_username)}`} target="_blank" rel="noreferrer" title={`打开 ${member.github_username} 的 GitHub`} onClick={(event) => event.stopPropagation()}>
+            <GitBranch size={13} /> GitHub
+          </a>
         )}
       </div>
       <div className={`load-bar ${loadLevel}`}>

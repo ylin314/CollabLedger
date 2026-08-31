@@ -66,7 +66,7 @@ def public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         out["skills"] = []
     for key in ("password_hash", "token_hash", "session_expires_at", "updated_at"):
         out.pop(key, None)
-    return {key: out.get(key) for key in ("id", "name", "email", "skills", "max_concurrent_tasks", "status", "created_at") if key in out}
+    return {key: out.get(key) for key in ("id", "name", "email", "skills", "max_concurrent_tasks", "status", "created_at", "avatar_url") if key in out}
 
 
 def require_user(conn: sqlite3.Connection, request: Optional[Request]) -> sqlite3.Row:
