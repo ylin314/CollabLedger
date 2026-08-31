@@ -143,3 +143,50 @@ def test_github_reverse_issue_and_pull_are_explicit_owner_writes(monkeypatch, tm
     assert issue.status_code == 201 and pull.status_code == 201
     assert calls[0][0].endswith("/issues") and calls[1][0].endswith("/pulls")
     assert all(call[1] == "gh-token" for call in calls)
+
+
+def test_github_contract_binding_returns_legacy_fields_and_rejects_external_urls(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "github-contract.db")
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "client-secret")
+    owner_client = _client(); _account(owner_client, "github-contract@example.com")
+    project_id = _project(owner_client)
+    state = owner_client.get("/api/integrations/github/auth-url").json()["state"]
+    monkeypatch.setattr(integrations, "_exchange_github_identity", lambda code, redirect_uri: integrations.PlatformIdentity("1", "owner", "gh-token", ["repo"]))
+    assert owner_client.get("/api/integrations/github/callback", params={"code": "code", "state": state}).status_code == 307
+
+    invalid = owner_client.post(f"/api/projects/{project_id}/github/repositories", json={"repository_url": "https://evil.example/repo"})
+    assert invalid.status_code == 422
+    bound = owner_client.post(
+        f"/api/projects/{project_id}/github/repositories",
+        json={"repository_url": "https://github.com/demo/repo.git", "default_branch": "trunk", "sync_from": "2026-08-30"},
+    )
+    assert bound.status_code == 201
+    body = bound.json()
+    assert body["repository_url"] == "https://github.com/demo/repo.git"
+    assert body["default_branch"] == "trunk"
+    assert body["sync_from"] == "2026-08-30"
+
+
+def test_github_statistics_filters_repository_and_includes_end_date(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "github-statistics-contract.db")
+    client = _client(); user = _account(client, "github-statistics@example.com"); project_id = _project(client)
+    integration_id = _insert_github_connection_and_integration(user["id"], project_id)
+    conn = api.db(); stamp = integrations._now()
+    for repo, occurred_at in (("demo/repo", "2026-08-30T23:59:00Z"), ("other/repo", "2026-08-30T12:00:00Z")):
+        conn.execute(
+            """INSERT INTO contributions(project_id,user_id,kind,title,description,quantity,metadata,evidence_url,status,source,occurred_at,created_at,updated_at,created_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (project_id, user["id"], "code", f"提交：{repo} commit", "同步", 1,
+             json.dumps({"github": {"repo": repo, "additions": 4, "deletions": 2}}), None, "pending", "github", occurred_at, stamp, stamp, user["id"]),
+        )
+    conn.commit(); conn.close()
+
+    all_stats = client.get(f"/api/projects/{project_id}/github/statistics", params={"end_date": "2026-08-30"}).json()
+    filtered = client.get(
+        f"/api/projects/{project_id}/github/statistics",
+        params={"repository_id": integration_id, "end_date": "2026-08-30"},
+    ).json()
+    assert all_stats["members"][0]["commits"] == 2
+    assert filtered["members"][0]["commits"] == 1
+    assert filtered["members"][0]["additions"] == 4

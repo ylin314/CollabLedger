@@ -24,7 +24,7 @@ export async function register(page: Page, name: string, email: string, password
 export async function createProject(page: Page, projectName: string) {
   await page.getByLabel("项目名称", { exact: true }).fill(projectName);
   await page.getByRole("button", { name: "创建项目并进入工作台" }).click();
-  await expect(page.getByText("任务看板").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("button", { name: "任务看板", exact: true })).toBeVisible({ timeout: 20_000 });
 }
 
 /** 注册 + 建项目的完整入口，返回账号邮箱。 */

@@ -169,8 +169,10 @@ function App() {
       setWorkspaceDiagnostics(workspace.diagnostics || {});
       setOnline(true);
       localStorage.setItem("collab_project_id", String(selectedId));
-      if (route.projectId !== selectedId) {
-        const page = route.page === "new" ? "overview" : route.page;
+      // 读取异步请求完成时的实际路由，避免创建项目后的旧闭包覆盖用户刚点击的页面。
+      const currentRoute = readRoute(window.location.hash);
+      if (currentRoute.projectId !== selectedId) {
+        const page = currentRoute.page === "new" ? "overview" : currentRoute.page;
         routerNavigate(routePath(selectedId, page), { replace: true });
       }
     } catch (error) {
@@ -306,6 +308,12 @@ function App() {
       />
     );
   if (route.page === "classrooms") return <ClassroomsView currentUser={auth} onToast={setToast} onBack={() => routerNavigate(project?.id ? routePath(project.id, "overview") : "/projects/new")} />;
+  if (loading && !project)
+    return (
+      <div className="auth-screen">
+        <div className="loading-state">正在加载项目工作区…</div>
+      </div>
+    );
   if (!loading && loadError && !project)
     return (
       <div className="app-error-screen">

@@ -128,7 +128,18 @@ function ProfileModal({ user, onClose, isSelf = false }) {
                       type="checkbox"
                       checked={Boolean(authorization.global_enabled)}
                       disabled={busy}
-                      onChange={(event) => saveAuthorization({ global_enabled: event.target.checked })}
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        setAuthorization((current) => current && ({
+                          ...current,
+                          global_enabled: enabled,
+                          cross_project_profile: enabled,
+                          collaboration_analysis: enabled,
+                          history_visible: enabled,
+                          data_status: enabled ? "retained" : "frozen",
+                        }));
+                        saveAuthorization({ global_enabled: enabled });
+                      }}
                     />
                     <span>同团队跨项目默认可用</span>
                   </label>

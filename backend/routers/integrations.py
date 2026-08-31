@@ -9,11 +9,12 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -34,8 +35,23 @@ HTTP_TIMEOUT = 15.0
 # 单次同步最多为多少条新 commit 请求 diff 统计；超过则跳过，避免首次全量同步耗尽 API 配额。
 DIFF_DETAIL_LIMIT = 100
 FRONTEND_BASE = os.getenv("COLLAB_FRONTEND_BASE", "http://127.0.0.1:5173")
+_GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 def _now() -> str: return now_iso()
+
+
+def _normalize_repository(value: Any) -> str:
+    """将契约中的仓库 URL/owner-name 统一为安全的 GitHub 仓库标识。"""
+    raw = str(value or "").strip()
+    if raw.startswith(("http://", "https://")):
+        parsed = urlparse(raw)
+        if parsed.hostname != "github.com" or parsed.query or parsed.fragment:
+            raise ValueError("GitHub 仓库地址不正确")
+        raw = parsed.path.strip("/")
+    raw = raw.removesuffix(".git").strip("/")
+    if not _GITHUB_REPOSITORY.fullmatch(raw):
+        raise ValueError("GitHub 仓库必须使用 owner/name 格式")
+    return raw
 
 # ---------- token 加密存储 ----------
 def _fernet() -> Fernet:
@@ -218,6 +234,9 @@ def _integration_public(row: sqlite3.Row) -> dict[str, Any]:
         "resource_type": config.get("resource_type", "repository"),
         "resource_id": config.get("resource_id") or (config.get("repos") or [None])[0],
         "resource_url": config.get("resource_url"),
+        "repository_url": config.get("resource_url") if row["platform"] == "github" else None,
+        "default_branch": config.get("default_branch") if row["platform"] == "github" else None,
+        "sync_from": config.get("sync_from"),
         "enabled": bool(row["enabled"]),
         "last_synced_at": config.get("last_synced_at"),
         "created_at": row["created_at"],
@@ -517,8 +536,12 @@ def github_sync(project_id: int, payload: dict[str, Any], request: Request) -> d
     config = _config_dict(payload.get("config") or (integration["config"] if integration else None))
     repos = []
     for raw_repo in config.get("repos") or []:
-        repo = str(raw_repo).strip()
-        if repo and repo not in repos:
+        try:
+            repo = _normalize_repository(raw_repo)
+        except ValueError as exc:
+            conn.close()
+            fail(422, "VALIDATION_ERROR", str(exc), [{"field": "repos", "message": str(exc)}])
+        if repo not in repos:
             repos.append(repo)
     if not repos:
         conn.close()

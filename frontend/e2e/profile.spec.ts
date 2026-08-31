@@ -3,7 +3,7 @@ import { setupOwner } from "./helpers";
 
 test("我的长期画像：数据授权开关与画像来源 @mobile", async ({ page }) => {
   await setupOwner(page, "画像组长", "画像链路项目");
-  await page.getByText("我的长期画像").first().click();
+  await page.getByRole("button", { name: "我的长期画像", exact: true }).click();
 
   // 画像面板打开：显示数据授权区（全局开关）
   await expect(page.getByText("数据授权").first()).toBeVisible({ timeout: 15_000 });

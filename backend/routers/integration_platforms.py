@@ -22,7 +22,7 @@ from backend.routers.integrations import (
     _config_dict, _connection, _consume_state, _decrypt, _ensure_contribution,
     _exchange_github_identity, _fernet, _finish_job, _github_config, _github_post,
     _insert_job, _integration, _integration_public, _now, _record_event,
-    _safe_external_error, _session_hash, _store_state, _upsert_connection, github_callback,
+    _normalize_repository, _safe_external_error, _session_hash, _store_state, _upsert_connection, github_callback,
     github_status, github_sync,
 )
 
@@ -88,6 +88,10 @@ def platform_oauth_start(platform: str, payload: dict[str, Any], request: Reques
         redirect_uri = str(payload.get("redirect_uri") or cfg["redirect_uri"] or "")
         if not cfg["client_id"] or not cfg["client_secret"]:
             fail(409, "NOT_CONFIGURED", "GitHub OAuth 未配置")
+        try:
+            _fernet()
+        except RuntimeError as exc:
+            fail(409, "NOT_CONFIGURED", str(exc))
         authorize_url = f"{GITHUB_OAUTH}/authorize?{urlencode({'client_id': cfg['client_id'], 'redirect_uri': redirect_uri, 'scope': 'repo', 'state': state, 'allow_signup': 'true'})}"
     else:
         adapter = ADAPTERS.get(platform)
@@ -181,11 +185,16 @@ def create_project_integration(project_id: int, payload: dict[str, Any], request
     if platform == "github":
         repo = config["resource_id"]
         if not repo and config["resource_url"]:
-            repo = str(config["resource_url"]).rstrip("/").split("github.com/")[-1].removesuffix(".git")
+            repo = config["resource_url"]
         if not repo:
             conn.close(); fail(422, "VALIDATION_ERROR", "GitHub 集成必须提供仓库")
+        try:
+            repo = _normalize_repository(repo)
+        except ValueError as exc:
+            conn.close(); fail(422, "VALIDATION_ERROR", str(exc), [{"field": "resource_id", "message": str(exc)}])
         config["resource_id"] = repo
         config["repos"] = [repo]
+        config["default_branch"] = str(payload.get("default_branch") or "main").strip() or "main"
     else:
         if not config["resource_id"]:
             conn.close(); fail(422, "VALIDATION_ERROR", "resource_id 不能为空")
@@ -340,12 +349,21 @@ def github_disconnect_contract(request: Request) -> Response:
 @router.post("/api/projects/{project_id}/github/repositories", status_code=201)
 def bind_github_repository(project_id: int, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     repository_url = str(payload.get("repository_url") or "").strip()
-    repo = repository_url.rstrip("/").split("github.com/")[-1].removesuffix(".git") if repository_url else str(payload.get("repository") or "").strip()
-    return create_project_integration(project_id, {
+    try:
+        repo = _normalize_repository(repository_url or payload.get("repository"))
+    except ValueError as exc:
+        fail(422, "VALIDATION_ERROR", str(exc), [{"field": "repository_url", "message": str(exc)}])
+    result = create_project_integration(project_id, {
         "platform": "github", "resource_type": "repository", "resource_id": repo,
         "resource_url": repository_url or f"https://github.com/{repo}", "sync_from": payload.get("sync_from"),
         "default_branch": payload.get("default_branch") or "main",
     }, request)
+    return {
+        **result,
+        "repository_url": result["resource_url"],
+        "default_branch": result.get("default_branch") or payload.get("default_branch") or "main",
+        "sync_from": result.get("sync_from") if result.get("sync_from") is not None else payload.get("sync_from"),
+    }
 
 
 @router.post("/api/projects/{project_id}/github/sync")
@@ -359,7 +377,11 @@ def github_sync_contract(project_id: int, payload: dict[str, Any], request: Requ
     conn.close()
     if not integration:
         fail(404, "NOT_FOUND", "尚未绑定 GitHub 仓库")
-    result = github_sync(project_id, {"config": _config_dict(integration["config"])}, request)
+    result = github_sync(
+        project_id,
+        {"config": _config_dict(integration["config"]), "since": payload.get("since")},
+        request,
+    )
     return {
         "repository_id": int(integration["id"]), "synced_at": _now(), "status": result["status"],
         "statistics": {
@@ -381,37 +403,81 @@ def github_statistics(
     end_date: Optional[str] = None,
 ) -> dict[str, Any]:
     conn = db(); ensure_project_access(conn, project_id, request)
+    repository_filter: Optional[set[str]] = None
+    if repository_id is not None:
+        integration = conn.execute(
+            "SELECT config FROM project_integrations WHERE id=? AND project_id=? AND platform='github'",
+            (repository_id, project_id),
+        ).fetchone()
+        if not integration:
+            conn.close()
+            fail(404, "NOT_FOUND", "GitHub 仓库绑定不存在")
+        config = _config_dict(integration["config"])
+        repository_filter = set(config.get("repos") or [])
+        if not repository_filter and config.get("resource_id"):
+            repository_filter.add(str(config["resource_id"]))
     where = ["c.project_id=?", "c.source='github'", "c.deleted_at IS NULL"]
     args: list[Any] = [project_id]
     if user_id is not None:
         where.append("c.user_id=?"); args.append(user_id)
     if start_date:
-        where.append("c.occurred_at>=?"); args.append(start_date)
+        where.append("substr(c.occurred_at,1,10)>=?"); args.append(start_date)
     if end_date:
-        where.append("c.occurred_at<=?"); args.append(end_date)
+        where.append("substr(c.occurred_at,1,10)<=?"); args.append(end_date)
     rows = conn.execute(
-        f"SELECT c.user_id,u.name,COUNT(*) total,SUM(CASE WHEN c.title LIKE '提交：%' THEN 1 ELSE 0 END) commits,SUM(CASE WHEN c.title LIKE 'PR：%' THEN 1 ELSE 0 END) pull_requests,SUM(CASE WHEN c.title LIKE 'Issue：%' THEN 1 ELSE 0 END) issues,SUM(CASE WHEN c.title LIKE 'Review：%' THEN 1 ELSE 0 END) reviews FROM contributions c JOIN users u ON u.id=c.user_id WHERE {' AND '.join(where)} GROUP BY c.user_id,u.name ORDER BY c.user_id",
+        f"SELECT c.*,u.name FROM contributions c JOIN users u ON u.id=c.user_id WHERE {' AND '.join(where)} ORDER BY c.user_id,c.id",
         args,
     ).fetchall()
-    where.append("c.title LIKE '提交：%'")
-    members = []
+    grouped: dict[int, dict[str, Any]] = {}
     for row in rows:
-        connection = conn.execute("SELECT external_username FROM platform_connections WHERE user_id=? AND platform='github' ORDER BY id DESC LIMIT 1", (row["user_id"],)).fetchone()
-        additions = deletions = 0
-        for meta_row in conn.execute(
-            f"SELECT c.metadata FROM contributions c WHERE {' AND '.join(where)} AND c.user_id=?",
-            (*args, row["user_id"]),
-        ).fetchall():
-            try:
-                gh_meta = (json.loads(meta_row["metadata"] or "{}") or {}).get("github") or {}
-            except (json.JSONDecodeError, TypeError):
-                continue
-            additions += int(gh_meta.get("additions") or 0)
-            deletions += int(gh_meta.get("deletions") or 0)
+        try:
+            metadata = json.loads(row["metadata"] or "{}") or {}
+            meta = metadata.get("github") or {}
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        if repository_filter is not None and meta.get("repo") not in repository_filter:
+            continue
+        user_key = int(row["user_id"])
+        item = grouped.setdefault(
+            user_key,
+            {
+                "user_id": user_key,
+                "name": row["name"],
+                "commits": 0,
+                "pull_requests": 0,
+                "issues": 0,
+                "reviews": 0,
+                "additions": 0,
+                "deletions": 0,
+            },
+        )
+        title = str(row["title"] or "")
+        if title.startswith("提交："):
+            item["commits"] += 1
+            item["additions"] += int(meta.get("additions") or 0)
+            item["deletions"] += int(meta.get("deletions") or 0)
+        elif title.startswith("PR："):
+            item["pull_requests"] += 1
+        elif title.startswith("Issue："):
+            item["issues"] += 1
+        elif title.startswith("Review："):
+            item["reviews"] += 1
+    members = []
+    for user_key, row in sorted(grouped.items()):
+        connection = conn.execute(
+            "SELECT external_username FROM platform_connections WHERE user_id=? AND platform='github' ORDER BY id DESC LIMIT 1",
+            (user_key,),
+        ).fetchone()
         members.append({
-            "user_id": int(row["user_id"]), "name": row["name"], "github_username": connection["external_username"] if connection else None,
-            "commits": int(row["commits"] or 0), "additions": additions, "deletions": deletions,
-            "pull_requests": int(row["pull_requests"] or 0), "reviews": int(row["reviews"] or 0), "issues": int(row["issues"] or 0),
+            "user_id": user_key,
+            "name": row["name"],
+            "github_username": connection["external_username"] if connection else None,
+            "commits": row["commits"],
+            "additions": row["additions"],
+            "deletions": row["deletions"],
+            "pull_requests": row["pull_requests"],
+            "reviews": row["reviews"],
+            "issues": row["issues"],
         })
     conn.close()
     return {
@@ -421,6 +487,10 @@ def github_statistics(
 
 
 def _github_write(project_id: int, repo: str, endpoint: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    try:
+        repo = _normalize_repository(repo)
+    except ValueError as exc:
+        fail(422, "VALIDATION_ERROR", str(exc), [{"field": "repository", "message": str(exc)}])
     conn = db(); project, user, _ = ensure_project_access(conn, project_id, request, "owner"); ensure_writable(project)
     connection = _connection(conn, int(user["id"]), "github")
     if not connection:

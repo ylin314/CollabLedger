@@ -644,6 +644,7 @@ function TaskModal({
                 ...form,
                 assignee_id: form.assignee_id ? Number(form.assignee_id) : null,
                 estimated_hours: Number(form.estimated_hours),
+                due_date: form.due_date || null,
                 reviewer_id: form.reviewer_id ? Number(form.reviewer_id) : null,
                 participant_ids: form.participant_ids,
               })
