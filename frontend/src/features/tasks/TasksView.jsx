@@ -682,12 +682,13 @@ function WorklogModal({ tasks, role, user, onClose, onToast, onSaved }) {
         }),
       });
       onToast("任务打卡已保存");
-      await onSaved?.();
+      // 先关闭弹窗立即离开打卡页；数据刷新后台执行，
+      // 避免迟到的 onSaved 回调把用户刚点击的页面拉回总览。
       onClose();
+      void onSaved?.();
     } catch (error) {
-      onToast(error.message);
-    } finally {
       setBusy(false);
+      onToast(error.message);
     }
   }
   return (
