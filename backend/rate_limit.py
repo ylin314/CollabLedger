@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -72,10 +73,14 @@ DEFAULT_RULES = {
 }
 
 
+def _env_disabled() -> bool:
+    return (os.getenv("COLLAB_RATE_LIMIT_DISABLED") or "").strip().lower() in {"1", "true", "yes"}
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, *, limiter: Optional[SlidingWindowLimiter] = None, trusted_proxy: bool = False):
         super().__init__(app)
+        self.disabled = _env_disabled()
         self.limiter = limiter or SlidingWindowLimiter(DEFAULT_RULES)
         self.trusted_proxy = trusted_proxy
 
@@ -87,6 +92,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return request.client.host if request.client else "unknown"
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # COLLAB_RATE_LIMIT_DISABLED=1 仅用于本地 E2E/演示环境批量造号；生产保持默认限流。
+        if self.disabled:
+            return await call_next(request)
         # Starlette TestClient shares one application-level limiter across tests;
         # unit tests exercise the limiter directly instead of consuming production quotas.
         if request.client and request.client.host == "testclient":
