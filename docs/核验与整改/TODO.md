@@ -94,13 +94,13 @@
 - [x] 【2026-08-31 修复】WorklogModal 保存打卡后 await onSaved() 完成才执行 onClose()，迟到的导航回总览会覆盖用户刚点击的页面（E2E trace 证据：URL tasks→overview 回跳）。已改为保存成功立即 onClose()、onSaved 后台执行（frontend/src/features/tasks/TasksView.jsx:684-688）。
 
 - [x] 【2026-08-31】已建 Playwright E2E 13 条：注册/登录/任务/打卡/贡献/推荐/周报/Agent/画像/auth（desktop 6 + @mobile 390px 7），13/13 通过。
-- [ ] E2E 覆盖缺口：邀请链路、任务评价（QualityReviewModal）用例待补；@mobile 仅覆盖标记用例，非每条 390px 全跑。
+- [x] 【2026-08-31 补齐】新增 invite.spec.ts（生成邀请→退出→注册第二账号→接受邀请→进入项目）与 review.spec.ts（完成任务→自动评价弹窗→提交→重开详情核对持久化），desktop+mobile 共 4 条；全量 E2E 17/17 通过。
 - [ ] 每条 E2E 在桌面和 390px 执行；截图仅放本地产物，不入 Git。
 - [ ] 真实 SQLite：新库、历史库、重复启动幂等、重启不丢任务/贡献/周报/OAuth/画像。
 - [ ] 真实 PostgreSQL：Alembic upgrade/current、建表、写读、重启、备份恢复。
-- [ ] Docker：修复 GITHUB_* env 透传，验证 healthcheck、命名卷、容器重启、静态托管。
+- [x] 【2026-08-31】Docker compose 部署验收通过：构建→healthcheck healthy→静态前端托管 200→注册/登录/建项目 API smoke→容器重启后数据持久化（命名卷）；修复 entrypoint.sh CRLF 导致容器无法启动的可移植性缺陷（Dockerfile 构建时清 CR + .gitattributes 强制 *.sh LF）；compose 已透传 D5 环境变量。
 - [ ] HTTPS/CORS/Secure Cookie/Trust Proxy/LLM env 在真实反代环境验证；无域名证书时记录外部阻塞。
-- [ ] 备份恢复演练后核对登录、项目、任务、贡献、审计日志。
+- [x] 【2026-08-31 演练通过】容器备份→API 破坏（删任务/贡献 204）→restore.ps1 恢复（自动 pre-restore 安全备份）→integrity ok→healthcheck healthy→登录/项目/任务/贡献全部恢复一致。
 - [ ] CI 增加必要的 compile/migration/contract 门禁，但不把外部密钥放进 CI。
 - [ ] 修正演示手册与实现状态（disputed、GitHub 回调、source 徽标、画像授权）。
 - [ ] 15 分钟演示从 seed 到收尾真实走查，未实现能力明确标红，不用假数据。

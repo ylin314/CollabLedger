@@ -44,6 +44,7 @@ def test_postgresql_initialize_adds_new_columns_to_existing_schema(monkeypatch):
     class FakeInspector:
         def get_columns(self, table):
             return [{"name": name} for name in {
+            "users": {"avatar_url"},
                 "tasks": {"id"},
                 "project_invitations": {"id"},
                 "task_review_history": {"id", "created_at"},
