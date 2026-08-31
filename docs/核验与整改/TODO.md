@@ -94,7 +94,7 @@
 - [x] 【2026-08-31 修复】WorklogModal 保存打卡后 await onSaved() 完成才执行 onClose()，迟到的导航回总览会覆盖用户刚点击的页面（E2E trace 证据：URL tasks→overview 回跳）。已改为保存成功立即 onClose()、onSaved 后台执行（frontend/src/features/tasks/TasksView.jsx:684-688）。
 
 - [x] 【2026-08-31】已建 Playwright E2E 13 条：注册/登录/任务/打卡/贡献/推荐/周报/Agent/画像/auth（desktop 6 + @mobile 390px 7），13/13 通过。
-- [ ] E2E 覆盖缺口：邀请链路、任务评价（QualityReviewModal）用例待补；@mobile 仅覆盖标记用例，非每条 390px 全跑。
+- [x] 【2026-08-31 补齐】新增 invite.spec.ts（生成邀请→退出→注册第二账号→接受邀请→进入项目）与 review.spec.ts（完成任务→自动评价弹窗→提交→重开详情核对持久化），desktop+mobile 共 4 条；全量 E2E 17/17 通过。
 - [ ] 每条 E2E 在桌面和 390px 执行；截图仅放本地产物，不入 Git。
 - [ ] 真实 SQLite：新库、历史库、重复启动幂等、重启不丢任务/贡献/周报/OAuth/画像。
 - [ ] 真实 PostgreSQL：Alembic upgrade/current、建表、写读、重启、备份恢复。
