@@ -98,7 +98,7 @@
 - [ ] 每条 E2E 在桌面和 390px 执行；截图仅放本地产物，不入 Git。
 - [ ] 真实 SQLite：新库、历史库、重复启动幂等、重启不丢任务/贡献/周报/OAuth/画像。
 - [ ] 真实 PostgreSQL：Alembic upgrade/current、建表、写读、重启、备份恢复。
-- [ ] Docker：修复 GITHUB_* env 透传，验证 healthcheck、命名卷、容器重启、静态托管。
+- [x] 【2026-08-31】Docker compose 部署验收通过：构建→healthcheck healthy→静态前端托管 200→注册/登录/建项目 API smoke→容器重启后数据持久化（命名卷）；修复 entrypoint.sh CRLF 导致容器无法启动的可移植性缺陷（Dockerfile 构建时清 CR + .gitattributes 强制 *.sh LF）；compose 已透传 D5 环境变量。
 - [ ] HTTPS/CORS/Secure Cookie/Trust Proxy/LLM env 在真实反代环境验证；无域名证书时记录外部阻塞。
 - [ ] 备份恢复演练后核对登录、项目、任务、贡献、审计日志。
 - [ ] CI 增加必要的 compile/migration/contract 门禁，但不把外部密钥放进 CI。

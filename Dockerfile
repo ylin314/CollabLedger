@@ -26,7 +26,8 @@ COPY --chown=appuser:appuser backend/ ./backend/
 COPY --chown=appuser:appuser alembic/ ./alembic/
 COPY --chown=appuser:appuser alembic.ini ./alembic.ini
 COPY --chown=appuser:appuser scripts/ ./scripts/
-RUN chmod +x /app/scripts/entrypoint.sh
+# Windows 工作区 autocrlf 可能把 entrypoint.sh 写成 CRLF，容器内 shebang 带回车会无法启动
+RUN sed -i "s/\r$//" /app/scripts/entrypoint.sh && chmod +x /app/scripts/entrypoint.sh
 COPY --from=frontend-builder --chown=appuser:appuser /build/frontend/dist/ ./frontend/dist/
 
 USER appuser
