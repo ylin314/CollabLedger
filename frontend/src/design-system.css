@@ -1468,12 +1468,11 @@ select:focus-visible {
   position: fixed;
   top: 42px;
   left: 44px;
-  width: min(430px, 38vw);
+  width: auto;
   color: #fff;
   content: "协作成果，有据可查。";
-  white-space: normal;
-  overflow-wrap: anywhere;
-  font-size: clamp(36px, 5vw, 76px);
+  white-space: nowrap;
+  font-size: clamp(32px, 4vw, 64px);
   line-height: 0.98;
   font-weight: 950;
 }
@@ -1799,3 +1798,17 @@ select:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+/* Viewport-safe dialogs and focused account controls. */
+.modal-backdrop { overflow: auto; padding: 16px; }
+.modal { width: min(625px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.recommend-modal { width: min(760px, calc(100vw - 32px)); }
+.task-detail-modal { width: min(900px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); }
+.profile-chip { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px; border-radius: 10px; }
+.profile-chip-main { display: flex; flex-direction: column; align-items: flex-start; flex: 1; min-width: 0; text-align: left; }
+.profile-chip-main strong, .profile-chip-main span { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-chip-main span { font-size: 10px; color: #93a4bf; margin-top: 3px; }
+.profile-logout { color: #8ea0bc; padding: 8px; border-radius: 7px; }
+.profile-logout:hover { color: #fff; background: #243758; }
+.github-link { display: inline-flex; align-items: center; gap: 4px; color: #4f6fce; text-decoration: none; font-size: 11px; margin-left: auto; }
+.github-link:hover { text-decoration: underline; }
+@media (max-width: 640px) { .modal-backdrop { padding: 8px; } .modal, .recommend-modal, .task-detail-modal { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); padding: 18px; } .form-row, .task-detail-grid { grid-template-columns: 1fr; } }

@@ -28,6 +28,7 @@ import {
 import "./styles.css";
 import "./design-system.css";
 import { initials, nav, readRoute, routePath, statusMeta } from "./shared/core";
+import defaultAvatar from "./assets/akarin.jpeg";
 import { Overview } from "./features/overview/Overview";
 import {
   TasksView,
@@ -493,21 +494,21 @@ function App() {
             </button>
           )}
           <button className="side-tool" onClick={() => setShowMyProfile(true)}>
-            <UserRound aria-hidden="true" /> 我的长期画像
+            <UserRound aria-hidden="true" /> 我的画像
           </button>
           <button className="side-tool" onClick={() => navigate("new")}>
             <Plus aria-hidden="true" /> 新建项目
           </button>
         </div>
         <div className="sidebar-bottom">
-          <button className="profile-chip" onClick={logout}>
-            <div className="avatar avatar-me">{initials(auth.name)}</div>
-            <div>
+          <div className="profile-chip">
+            <img className="avatar avatar-me avatar-image" src={auth.avatar_url || defaultAvatar} alt="头像" />
+            <button className="profile-chip-main" onClick={() => setShowMyProfile(true)}>
               <strong>{auth.name}</strong>
-              <span>退出登录</span>
-            </div>
-            <LogOut className="more" aria-hidden="true" />
-          </button>
+              <span>查看个人资料</span>
+            </button>
+            <button className="profile-logout" onClick={logout} aria-label="退出登录" title="退出登录"><LogOut className="more" aria-hidden="true" /></button>
+          </div>
         </div>
       </aside>
       <main className="main-content">
@@ -734,7 +735,7 @@ function App() {
         />
       )}{" "}
       {showMyProfile && (
-        <ProfileModal user={auth} isSelf onClose={() => setShowMyProfile(false)} />
+        <ProfileModal user={auth} isSelf onClose={() => setShowMyProfile(false)} onUserUpdated={(updated) => setAuth((current) => ({ ...current, ...updated }))} />
       )}
       {toast && <div className="toast"><BookOpenCheck aria-hidden="true" /> {toast}</div>}
     </div>

@@ -41,6 +41,7 @@ class UserUpdate(BaseModel):
     skills: Optional[list[str]] = None
     max_concurrent_tasks: Optional[int] = Field(default=None, ge=1, le=100)
     status: Optional[Literal["online", "offline", "busy"]] = None
+    avatar_url: Optional[str] = Field(default=None, max_length=700000)
 
 
 class ProfileAuthorizationUpdate(BaseModel):

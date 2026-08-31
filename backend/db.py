@@ -15,14 +15,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.models import Base
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = r'''
 CREATE TABLE IF NOT EXISTS users (
  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT,
  skills TEXT NOT NULL DEFAULT '[]', max_concurrent_tasks INTEGER NOT NULL DEFAULT 3,
  status TEXT NOT NULL DEFAULT 'offline', password_hash TEXT, created_at TEXT NOT NULL,
- updated_at TEXT
+ updated_at TEXT, avatar_url TEXT
 );
 CREATE TABLE IF NOT EXISTS projects (
  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, project_type TEXT,
@@ -431,6 +431,7 @@ def _initialize_postgresql(path: str | Path | None = None) -> None:
     with engine.begin() as conn:
         inspector = inspect(conn)
         additions = {
+            "users": {"avatar_url": "TEXT"},
             "tasks": {"reviewer_id": "INTEGER"},
             "project_invitations": {"is_mentor": "INTEGER NOT NULL DEFAULT 0"},
             "task_review_history": {"updated_at": "VARCHAR(40)"},
@@ -459,7 +460,7 @@ def initialize(path: str | Path | None = None) -> None:
     legacy_contributions = "contributions" in [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='contributions'")] and "status" not in _columns(conn, "contributions")
     conn.executescript(SCHEMA_SQL)
     # Forward-compatible upgrades for databases created by pre-Alembic versions.
-    _add_columns(conn, "users", {"password_hash": "TEXT", "updated_at": "TEXT"})
+    _add_columns(conn, "users", {"password_hash": "TEXT", "updated_at": "TEXT", "avatar_url": "TEXT"})
     _add_columns(conn, "projects", {"status": "TEXT NOT NULL DEFAULT 'active'", "updated_at": "TEXT", "archived_at": "TEXT", "deleted_at": "TEXT", "classroom_id": "INTEGER"})
     _add_columns(conn, "memberships", {"updated_at": "TEXT", "left_at": "TEXT", "status": "TEXT NOT NULL DEFAULT 'active'"})
     _add_columns(conn, "tasks", {"priority": "TEXT NOT NULL DEFAULT 'medium'", "created_by": "INTEGER", "reviewer_id": "INTEGER", "deleted_at": "TEXT"})

@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, sendJson } from "../../api/client";
 import { SkillBar } from "../../shared/components";
+import defaultAvatar from "../../assets/akarin.jpeg";
 
-function ProfileModal({ user, onClose, isSelf = false }) {
+function ProfileModal({ user, onClose, isSelf = false, onUserUpdated = null }) {
   const [profile, setProfile] = useState(null);
   const [authorization, setAuthorization] = useState(null);
   const [collaborations, setCollaborations] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef(null);
 
   const load = useCallback(async () => {
     setError("");
@@ -32,6 +34,35 @@ function ProfileModal({ user, onClose, isSelf = false }) {
       setError(reason.message);
     }
   }, [isSelf, user.id]);
+
+  async function updateAvatar(file) {
+    if (!file) return;
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type) || file.size > 512 * 1024) {
+      setError("请上传 512KB 以内的 JPG、PNG 或 WebP 图片");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      setBusy(true);
+      setError("");
+      try {
+        const updated = await sendJson("/api/users/me", { method: "PATCH", body: JSON.stringify({ avatar_url: reader.result }) });
+        setProfile((current) => current ? { ...current, avatar_url: updated.avatar_url } : current);
+        onUserUpdated?.(updated);
+      } catch (reason) { setError(reason.message); } finally { setBusy(false); }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function resetAvatar() {
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await sendJson("/api/users/me", { method: "PATCH", body: JSON.stringify({ avatar_url: "" }) });
+      setProfile((current) => current ? { ...current, avatar_url: null } : current);
+      onUserUpdated?.(updated);
+    } catch (reason) { setError(reason.message); } finally { setBusy(false); }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -105,15 +136,23 @@ function ProfileModal({ user, onClose, isSelf = false }) {
           </div>
           <button aria-label="关闭画像" onClick={onClose}>×</button>
         </div>
+        <div className="profile-avatar-row">
+          <img className="profile-avatar" src={profile?.avatar_url || user.avatar_url || defaultAvatar} alt="头像" />
+          {isSelf && <div className="profile-avatar-actions">
+            <strong>个人头像</strong>
+            <span>支持 JPG、PNG、WebP，最大 512KB</span>
+            <div>
+              <button className="ghost-button" disabled={busy} onClick={() => fileInputRef.current?.click()}>更换头像</button>
+              {(profile?.avatar_url || user.avatar_url) && <button className="text-button" disabled={busy} onClick={resetAvatar}>恢复默认</button>}
+            </div>
+            <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={(event) => { updateAvatar(event.target.files?.[0]); event.target.value = ""; }} />
+          </div>}
+        </div>
         {error && <p className="profile-error">{error}</p>}
         {!profile ? (
           <div className="loading-state">正在聚合真实项目记录…</div>
         ) : (
           <>
-            <p className="profile-note">
-              画像按读取时实时聚合；只使用未删除项目中的任务、评价、工时和 confirmed 贡献。
-              自报技能只用于冷启动，不冒充历史完成证据。
-            </p>
             {isSelf && authorization && (
               <section className="profile-section authorization-panel">
                 <div className="profile-section-head">
@@ -178,7 +217,7 @@ function ProfileModal({ user, onClose, isSelf = false }) {
             )}
 
             {empty ? (
-              <div className="empty-state">暂无可验证的历史画像；不会用假数据填充。</div>
+              <div className="empty-state">暂无可验证的历史画像</div>
             ) : (
               <section className="profile-section">
                 <div className="profile-grid">
@@ -215,7 +254,7 @@ function ProfileModal({ user, onClose, isSelf = false }) {
             )}
 
             <section className="profile-section">
-              <h3>数据来源与计算口径</h3>
+              <h3>画像依据</h3>
               <div className="source-chip-list">
                 {(profile.data_sources || []).map((item) => (
                   <span key={item.source}>{item.source}: {item.count}</span>

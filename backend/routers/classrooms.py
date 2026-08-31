@@ -31,7 +31,7 @@ def create_classroom(payload: ClassroomIn, request: Request) -> dict[str, Any]:
 @router.get("/api/classrooms/{classroom_id}/members")
 def list_classroom_members(classroom_id: int, request: Request) -> dict[str, Any]:
     conn = db(); user = require_user(conn, request); _access(conn, classroom_id, user["id"])
-    rows = conn.execute("SELECT cm.user_id,u.name,u.email,u.skills,u.status,cm.role,cm.joined_at FROM classroom_memberships cm JOIN users u ON u.id=cm.user_id WHERE cm.classroom_id=? AND cm.status='active' ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'teacher' THEN 1 ELSE 2 END,u.name", (classroom_id,)).fetchall(); conn.close()
+    rows = conn.execute("SELECT cm.user_id,u.name,u.email,u.skills,u.status,u.avatar_url,cm.role,cm.joined_at,(SELECT pc.external_username FROM platform_connections pc WHERE pc.user_id=cm.user_id AND pc.platform='github' AND pc.status='active' ORDER BY pc.id DESC LIMIT 1) github_username FROM classroom_memberships cm JOIN users u ON u.id=cm.user_id WHERE cm.classroom_id=? AND cm.status='active' ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'teacher' THEN 1 ELSE 2 END,u.name", (classroom_id,)).fetchall(); conn.close()
     return {"items": [dict(row) for row in rows]}
 
 @router.post("/api/classrooms/{classroom_id}/members", status_code=201)

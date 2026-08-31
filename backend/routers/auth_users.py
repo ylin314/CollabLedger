@@ -91,6 +91,12 @@ def update_me(payload: UserUpdate, request: Request) -> dict[str, Any]:
     conn = db()
     user = require_user(conn, request)
     data = _dump(payload)
+    if "avatar_url" in data:
+        avatar = data["avatar_url"] or None
+        if avatar and not re.fullmatch(r"data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+", avatar):
+            conn.close()
+            fail(422, "VALIDATION_ERROR", "头像格式不正确", [{"field": "avatar_url", "message": "请上传 JPG、PNG 或 WebP 图片"}])
+        data["avatar_url"] = avatar
     if data:
         if "skills" in data:
             data["skills"] = json.dumps(data["skills"], ensure_ascii=False)
@@ -183,7 +189,9 @@ def get_my_profile(request: Request) -> dict[str, Any]:
     current = require_user(conn, request)
     profile = build_profile_internal(conn, current["id"], self_view=True)
     conn.close()
-    return profile_payload(profile)
+    result = profile_payload(profile)
+    result["avatar_url"] = current["avatar_url"]
+    return result
 
 
 @router.get("/api/users/me/collaborations")
@@ -214,7 +222,9 @@ def get_user_profile(user_id: int, request: Request) -> dict[str, Any]:
     if current["id"] == target["id"]:
         profile = build_profile_internal(conn, target["id"], self_view=True)
         conn.close()
-        return profile_payload(profile)
+        result = profile_payload(profile)
+        result["avatar_url"] = target["avatar_url"]
+        return result
     same_project = conn.execute(
         """SELECT a.project_id FROM memberships a
            JOIN memberships b ON a.project_id=b.project_id
@@ -228,7 +238,9 @@ def get_user_profile(user_id: int, request: Request) -> dict[str, Any]:
         fail(403, "FORBIDDEN", "无权查看该成员画像")
     profile = build_profile_internal(conn, target["id"], authorized_only=True)
     conn.close()
-    return profile_payload(profile)
+    result = profile_payload(profile)
+    result["avatar_url"] = target["avatar_url"]
+    return result
 
 @router.get("/api/users/{user_id}")
 def get_user(user_id: int, request: Request) -> dict[str, Any]:

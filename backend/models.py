@@ -19,6 +19,7 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
     updated_at: Mapped[str | None] = mapped_column(String(40))
+    avatar_url: Mapped[str | None] = mapped_column(Text)
 
 
 class Project(Base):
