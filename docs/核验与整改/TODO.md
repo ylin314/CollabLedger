@@ -1,6 +1,7 @@
 # D1-D7 整改路线与 TODO
 
 > 审计结论已于 2026-08-30 获用户确认；D1、D2 已完成本地整改与阶段提交准备，当前严格串行进入 D3，顺序仍为 D1 → D2 → D3 → D4 → D5 → D6 → D7。每阶段必须同时具备代码、接口、数据库、前端、权限、失败/降级、真实运行和重启持久化证据，才可进入下一阶段。
+> 2026-08-31 增量：基于 dev_D=251fb75 复核 7 项设计决策全部落地；Playwright E2E 13/13 通过；修复 WorklogModal 保存打卡后路由回跳缺陷；origin/main 已恢复为 dev_D 祖先。
 
 ## 阶段 0：审计结论确认（已完成）
 
@@ -90,8 +91,10 @@
 - [x] 自动化验证本人/同项目/离开项目/双边授权/撤销授权和 D1 推荐回归。
 - [ ] D7：SQLite 重启持久化、旧库兼容、PostgreSQL、桌面/390px 浏览器行为。
 ## D7 质量部署与演示
+- [x] 【2026-08-31 修复】WorklogModal 保存打卡后 await onSaved() 完成才执行 onClose()，迟到的导航回总览会覆盖用户刚点击的页面（E2E trace 证据：URL tasks→overview 回跳）。已改为保存成功立即 onClose()、onSaved 后台执行（frontend/src/features/tasks/TasksView.jsx:684-688）。
 
-- [ ] 补 Playwright E2E：注册/登录/邀请/任务/打卡/评价/贡献/推荐/周报/Agent/画像。
+- [x] 【2026-08-31】已建 Playwright E2E 13 条：注册/登录/任务/打卡/贡献/推荐/周报/Agent/画像/auth（desktop 6 + @mobile 390px 7），13/13 通过。
+- [ ] E2E 覆盖缺口：邀请链路、任务评价（QualityReviewModal）用例待补；@mobile 仅覆盖标记用例，非每条 390px 全跑。
 - [ ] 每条 E2E 在桌面和 390px 执行；截图仅放本地产物，不入 Git。
 - [ ] 真实 SQLite：新库、历史库、重复启动幂等、重启不丢任务/贡献/周报/OAuth/画像。
 - [ ] 真实 PostgreSQL：Alembic upgrade/current、建表、写读、重启、备份恢复。
