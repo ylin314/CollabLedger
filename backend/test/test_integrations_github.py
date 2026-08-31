@@ -21,7 +21,6 @@ def _account(client: TestClient, name: str, email: str) -> dict:
 def _setup(monkeypatch, tmp_path, filename: str):
     monkeypatch.setattr(api, "DB_PATH", tmp_path / filename)
     api.init_db()
-    monkeypatch.setattr(gi, "_pending_states", {})
     monkeypatch.setenv("GITHUB_CLIENT_ID", "cid-test")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "secret-test")
     monkeypatch.setenv("COLLAB_FRONTEND_BASE", "https://testserver")
@@ -81,7 +80,6 @@ def test_auth_url_requires_config_or_returns_state(monkeypatch, tmp_path):
     payload = owner.get("/api/integrations/github/auth-url").json()
     assert payload["configured"] is True
     assert payload["url"].startswith("https://github.com/login/oauth/authorize?")
-    assert payload["state"] in gi._pending_states
     conn = api.db()
     persisted = conn.execute("SELECT user_id,platform,consumed_at FROM oauth_states WHERE state=?", (payload["state"],)).fetchone()
     conn.close()
@@ -236,7 +234,6 @@ def test_oauth_state_is_user_bound_and_survives_memory_reset(monkeypatch, tmp_pa
     _account(owner, "Owner", "state-owner@example.com")
     _account(other, "Other", "state-other@example.com")
     state = owner.get("/api/integrations/github/auth-url").json()["state"]
-    gi._pending_states.clear()
     wrong_user = other.get("/api/integrations/github/callback", params={"code": "abc", "state": state})
     assert "invalid_state" in wrong_user.headers["location"]
     correct_user = owner.get("/api/integrations/github/callback", params={"code": "abc", "state": state})

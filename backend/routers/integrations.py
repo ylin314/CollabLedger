@@ -33,8 +33,6 @@ STATE_TTL_SECONDS = 600
 HTTP_TIMEOUT = 15.0
 FRONTEND_BASE = os.getenv("COLLAB_FRONTEND_BASE", "http://127.0.0.1:5173")
 
-_pending_states: dict[str, str] = {}
-
 def _now() -> str: return now_iso()
 
 # ---------- token 加密存储 ----------
@@ -428,7 +426,6 @@ def github_auth_url(request: Request) -> dict[str, Any]:
     if not cfg["client_id"] or not cfg["client_secret"]:
         return {"configured": False, "message": "未配置 GitHub 接入：请在 .env 填写 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET"}
     state = secrets.token_urlsafe(24)
-    _pending_states[state] = _now()  # 仅兼容旧测试/诊断，不作为校验来源
     _store_state(user["id"], state, cfg["redirect_uri"] or "", _session_hash(request))
     params = {"client_id": cfg["client_id"], "redirect_uri": cfg["redirect_uri"], "scope": "repo", "state": state, "allow_signup": "true"}
     return {"configured": True, "url": f"{GITHUB_OAUTH}/authorize?{urlencode(params)}", "state": state}
@@ -445,7 +442,6 @@ def github_callback(request: Request, code: Optional[str] = None, state: Optiona
     except Exception:
         conn.close(); return _back("login_required")
     conn.close()
-    _pending_states.pop(state, None)
     state_row = _consume_state(state, user["id"], _session_hash(request))
     if not state_row:
         return _back("invalid_state")
