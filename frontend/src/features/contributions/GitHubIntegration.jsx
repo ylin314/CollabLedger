@@ -14,6 +14,7 @@ function GitHubIntegration({ project, role, currentUserId, onToast, onReload }) 
   const [tencentCredentials, setTencentCredentials] = useState({ access_token: "", external_account_id: "", external_username: "" });
   const [issue, setIssue] = useState({ repository: "", title: "", body: "" });
   const [pull, setPull] = useState({ repository: "", title: "", head: "", base: "main", body: "" });
+  const [showTencentForm, setShowTencentForm] = useState(false);
 
   async function reloadIntegrations() {
     const [github, available, userConnections, projectIntegrations] = await Promise.all([
@@ -100,6 +101,23 @@ function GitHubIntegration({ project, role, currentUserId, onToast, onReload }) 
     });
     sessionStorage.setItem("collab_oauth_platform", platform);
     window.location.href = payload.authorize_url;
+  }
+
+  function startConnection(platform) {
+    if (!platform.enabled) {
+      const messages = {
+        github: "GitHub 尚未配置，请先在后端设置 GITHUB_CLIENT_ID 和 GITHUB_CLIENT_SECRET",
+        feishu: "飞书尚未配置，请先在后端设置 FEISHU_APP_ID 和 FEISHU_APP_SECRET",
+        tencent_doc: "腾讯文档尚未配置，请先在后端设置 TENCENT_DOC_API_BASE",
+      };
+      onToast(messages[platform.platform] || `${platform.name}尚未配置`);
+      return;
+    }
+    if (platform.platform === "tencent_doc") {
+      setShowTencentForm(true);
+      return;
+    }
+    run(`connect-${platform.platform}`, () => connect(platform.platform));
   }
 
   async function connectTencent() {
@@ -199,8 +217,8 @@ function GitHubIntegration({ project, role, currentUserId, onToast, onReload }) 
               <strong>{platform.name}</strong>
               <span className={`contribution-status ${connection ? "confirmed" : "pending"}`}>{connection ? "已连接" : platform.enabled ? "可连接" : "需要外部配置"}</span>
               <p>{platform.category === "code" ? "提交、PR、Issue、Review、Webhook 与反向写入" : "文档版本与更新事件同步"}</p>
-              {!connection && platform.platform !== "tencent_doc" && (
-                <button className="ghost-button" disabled={!platform.enabled || busy} onClick={() => run(`connect-${platform.platform}`, () => connect(platform.platform))}>连接{platform.name}</button>
+              {!connection && (
+                <button className="ghost-button" disabled={Boolean(busy)} onClick={() => startConnection(platform)}>连接{platform.name}</button>
               )}
               {connection && (
                 <button className="ghost-button" disabled={busy} onClick={() => run(`disconnect-${platform.platform}`, () => disconnect(connection))}>停止使用并保留数据</button>
@@ -210,8 +228,8 @@ function GitHubIntegration({ project, role, currentUserId, onToast, onReload }) 
         })}
       </div>
 
-      {!activeConnections.tencent_doc && platforms.find((item) => item.platform === "tencent_doc")?.enabled && (
-        <details className="integration-details">
+      {!activeConnections.tencent_doc && showTencentForm && (
+        <details className="integration-details" open>
           <summary>连接腾讯文档访问凭据</summary>
           <div className="integration-form-row">
             <input type="password" autoComplete="off" value={tencentCredentials.access_token} onChange={(event) => setTencentCredentials((current) => ({ ...current, access_token: event.target.value }))} placeholder="访问令牌（不会回显）" />

@@ -277,7 +277,7 @@ function ProfileModal({ user, onClose, isSelf = false, onUserUpdated = null }) {
                     <article className="profile-list-item" key={item.user_id}>
                       <strong>{item.name}</strong>
                       <span>{item.shared_project_count} 个共同项目 · {item.shared_task_count} 个共同任务</span>
-                      <small>事实分 {item.cooperation_score}；不代表人格评价</small>
+                      <small>合作得分 {item.cooperation_score}</small>
                     </article>
                   )) : <p className="muted-note">暂无双方均授权的共同项目记录</p>}
                 </section>
