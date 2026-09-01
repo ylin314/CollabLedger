@@ -56,6 +56,8 @@ pytest backend/
 
 ## Security & Configuration Tips
 
+- 本机验收与演示统一使用首页展示的演示账号 owner-demo@example.com / password-123（种子数据自带，登录页有一键填入按钮），不再使用临时注册账号。
+
 - Agent 配置唯一入口为根目录 `.env`（从 `.env.example` 复制），Docker 与本地后端共用同一组变量。
 - LLM 使用 OpenAI Chat Completions 兼容协议；`LLM_API_KEY` 绝不提交到 Git，接口返回的配置信息必须脱敏。
 - 隐私边界：只记录任务、贡献与协作分析，不采集聊天、桌面、摄像头等个人数据。
