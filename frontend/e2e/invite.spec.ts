@@ -15,7 +15,7 @@ test("生成邀请链接并由新成员接受加入 @mobile", async ({ page }) =
   // 关闭成员管理弹窗后退出登录
   await page.getByRole("button", { name: "×", exact: true }).click();
   await expect(page.getByText("添加成员")).toBeHidden({ timeout: 10_000 });
-  await page.getByText("退出登录").click();
+  await page.getByRole("button", { name: "退出登录" }).click();
   await expect(page.getByRole("button", { name: "登录并进入工作台 →" })).toBeVisible({ timeout: 10_000 });
 
   await register(page, "受邀成员", uniqueEmail("invitee"));

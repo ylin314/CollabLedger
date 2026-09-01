@@ -88,10 +88,13 @@ function TasksView({
         <div className="filter-tabs">
           {[
             ["all", "全部"],
+            ["unassigned", "未分配"],
+            ["assigned", "待开始"],
             ["in_progress", "进行中"],
-            ["unassigned", "待分配"],
+            ["paused", "已暂停"],
             ["completed", "已完成"],
             ["overdue", "延期"],
+            ["unfinished", "未完成"],
           ].map(([id, label]) => (
             <button
               className={filter === id ? "active" : ""}

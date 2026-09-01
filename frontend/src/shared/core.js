@@ -15,6 +15,7 @@ const nav = [
   { id: "contributions", label: "贡献账本" },
   { id: "report", label: "贡献报告" },
   { id: "agent", label: "协作 Agent" },
+  { id: "classrooms", label: "班级成员" },
 ];
 
 const avatarColors = ["#f5d84a", "#bfd0ff", "#8be1c2", "#ffb5a3", "#d8c6ff"];
@@ -84,7 +85,8 @@ function routeHash(projectId, page = "overview") {
 }
 
 function routePath(projectId, page = "overview") {
-  if (page === "classrooms") return "/classrooms";
+  if (page === "classrooms")
+    return projectId ? `/projects/${projectId}/classrooms` : "/classrooms";
   return projectId ? `/projects/${projectId}/${page}` : "/projects/new";
 }
 
@@ -159,3 +161,4 @@ export {
   dimLabel,
   sourceLabel,
 };
+

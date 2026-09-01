@@ -61,6 +61,7 @@ const navIcons = {
   contributions: BookOpenCheck,
   report: BarChart3,
   agent: Bot,
+  classrooms: Users,
 };
 
 function NavGlyph({ id }) {
@@ -308,7 +309,7 @@ function App() {
         }}
       />
     );
-  if (route.page === "classrooms") return <ClassroomsView currentUser={auth} onToast={setToast} onBack={() => routerNavigate(project?.id ? routePath(project.id, "overview") : "/projects/new")} />;
+  if (route.page === "classrooms" && !route.projectId) return <ClassroomsView currentUser={auth} onToast={setToast} onBack={() => routerNavigate(project?.id ? routePath(project.id, "overview") : "/projects/new")} />;
   if (loading && !project)
     return (
       <div className="auth-screen">
@@ -487,7 +488,7 @@ function App() {
           <button className="side-tool" onClick={() => navigate("history")}>
             <History aria-hidden="true" /> 历史项目
           </button>
-          <button className="side-tool" onClick={() => routerNavigate("/classrooms")}><Users aria-hidden="true" /> 班级成员</button>
+          <button className="side-tool" onClick={() => navigate("classrooms")}><Users aria-hidden="true" /> 班级成员</button>
           {canWrite && (
             <button className="side-tool" onClick={() => navigate("worklog")}>
               <TimerReset aria-hidden="true" /> 今日打卡
@@ -548,7 +549,7 @@ function App() {
             </div>
           </div>
         </header>
-        <div className="page-wrap">
+        <div className="page-wrap" key={active}>
           {loading ? (
             <div className="loading-state">正在加载项目空间…</div>
           ) : (
@@ -645,6 +646,14 @@ function App() {
                   role={role}
                 />
               )}
+              {active === "classrooms" && (
+                <ClassroomsView
+                  currentUser={auth}
+                  onToast={setToast}
+                  embedded
+                  onBack={() => navigate("overview")}
+                />
+              )}{" "}
               {active === "members" && isOwner && (
                 <MembersModal
                   project={project}
@@ -775,3 +784,4 @@ export class AppErrorBoundary extends React.Component {
 }
 
 export default App;
+

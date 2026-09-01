@@ -10,7 +10,7 @@ test("注册新账号并创建项目进入工作台", async ({ page }) => {
 
 test("退出登录后可重新登录同一账号 @mobile", async ({ page }) => {
   const email = await setupOwner(page, "回登组长", "重新登录项目");
-  await page.getByText("退出登录").click();
+  await page.getByRole("button", { name: "退出登录" }).click();
   await expect(page.getByRole("button", { name: "登录并进入工作台 →" })).toBeVisible({ timeout: 15_000 });
   await page.getByLabel("邮箱").fill(email);
   await page.getByLabel("密码").fill("password-123");
