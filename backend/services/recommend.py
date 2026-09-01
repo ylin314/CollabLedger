@@ -55,7 +55,7 @@ def recommend_config() -> dict[str, Any]:
         "use_llm_skill": _env_bool("RECOMMEND_USE_LLM_SKILL", True) and mode != "rule",
         "use_llm_reason": _env_bool("RECOMMEND_USE_LLM_REASON", True),
         "skill_ai_weight": _clip(os.getenv("RECOMMEND_SKILL_AI_WEIGHT", "0.55")),
-        "llm_timeout": float(os.getenv("RECOMMEND_LLM_TIMEOUT") or os.getenv("LLM_TIMEOUT_SECONDS") or "12"),
+        "llm_timeout": float(os.getenv("RECOMMEND_LLM_TIMEOUT") or os.getenv("LLM_TIMEOUT_SECONDS") or "30"),
         "embedding_url": (os.getenv("LLM_EMBEDDING_URL") or "").strip(),
         "embedding_model": (os.getenv("LLM_EMBEDDING_MODEL") or "text-embedding-3-small").strip(),
     }
@@ -178,6 +178,14 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 def llm_json(prompt: str, timeout: float) -> dict[str, Any]:
+    """LLM JSON call with one fast retry on weak-network read timeout."""
+    try:
+        return _llm_json_once(prompt, timeout)
+    except httpx.TimeoutException:
+        return _llm_json_once(prompt, timeout)
+
+
+def _llm_json_once(prompt: str, timeout: float) -> dict[str, Any]:
     base = AgentConfig.from_env()
     if not base.configured:
         raise RuntimeError("LLM 未配置")

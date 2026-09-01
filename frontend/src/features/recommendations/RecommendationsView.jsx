@@ -192,6 +192,7 @@ function RecommendModal({
             {payload?.errors && Object.keys(payload.errors).length > 0 && (
               <div className="degrade-note">
                 <strong>⚠ AI 服务暂不可用，已自动回退规则计算</strong>
+<span>网络较差时可在服务端 .env 调大 RECOMMEND_LLM_TIMEOUT（默认 30 秒）后重启，即可恢复 AI 增强。</span>
                 {payload.errors.skill_error ? (
                   <span>技能：{payload.errors.skill_error}</span>
                 ) : null}
