@@ -2004,3 +2004,72 @@ button:active {
 
 
 
+/* ===== 周报 AI 分析卡与来源徽章 ===== */
+.ai-insight-card {
+  margin-top: 14px;
+  padding: 16px 18px;
+  background: var(--blue-soft, #dfe6ff);
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.ai-insight-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.ai-insight-head strong {
+  font-size: 15px;
+  letter-spacing: 0.5px;
+}
+
+.ai-insight-block + .ai-insight-block {
+  margin-top: 10px;
+}
+
+.ai-insight-block h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--muted, #66706c);
+  text-transform: uppercase;
+}
+
+.ai-insight-block ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.weekly-degrade {
+  margin-top: 12px;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.weekly-degrade strong {
+  font-size: 13px;
+}
+
+.member-summary-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 0 0;
+}
+
+.member-summary-source {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+}

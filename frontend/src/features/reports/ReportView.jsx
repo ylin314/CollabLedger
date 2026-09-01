@@ -136,7 +136,51 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks, diagno
             <li>任务工时 {currentWeekly?.summary?.task_hours ?? 0}h</li>
             <li>有效工时 {currentWeekly?.summary?.actual_hours ?? 0}h（打卡优先）</li>
           </ul>
-          {currentWeekly?.insight && (
+          {currentWeekly?.exists && currentWeekly?.source !== "llm" && (
+            <div className="degrade-note weekly-degrade">
+              <strong>⚠ 本报告为规则降级版，未接入 AI 分析</strong>
+              <span>点击右上角「刷新周报」重新生成 AI 增强版（需要服务端已配置 LLM）。</span>
+            </div>
+          )}
+          {currentWeekly?.insight_struct && (
+            <div className="ai-insight-card">
+              <div className="ai-insight-head">
+                <strong>AI 分析</strong>
+                <span className="source-label">AI 增强分析</span>
+              </div>
+              {currentWeekly.insight_struct.highlights?.length > 0 && (
+                <div className="ai-insight-block">
+                  <h4>本周亮点</h4>
+                  <ul>
+                    {currentWeekly.insight_struct.highlights.map((line, index) => (
+                      <li key={index}>{line}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {currentWeekly.insight_struct.risks?.length > 0 && (
+                <div className="ai-insight-block">
+                  <h4>风险与归因</h4>
+                  <ul>
+                    {currentWeekly.insight_struct.risks.map((line, index) => (
+                      <li key={index}>{line}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {currentWeekly.insight_struct.actions?.length > 0 && (
+                <div className="ai-insight-block">
+                  <h4>下步建议</h4>
+                  <ul>
+                    {currentWeekly.insight_struct.actions.map((line, index) => (
+                      <li key={index}>{line}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          {!currentWeekly?.insight_struct && currentWeekly?.insight && (
             <p className="weekly-insight">{currentWeekly.insight}</p>
           )}
           <p className="muted-note">
@@ -266,7 +310,16 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks, diagno
                   打卡工时 {item.checkin_hours ?? 0}h · 任务工时 {item.task_hours ?? 0}h ·
                   有效工时 {item.actual_hours ?? 0}h（{item.hours_source === "checkin" ? "打卡优先" : "任务工时"}）
                 </span>
-                {item.summary && <p>{item.summary}</p>}
+                {item.summary && (
+                  <p className="member-summary-line">
+                    {item.summary}
+                    <span className=
+                      "source-label member-summary-source"
+                    >
+                      {item.summary_source === "llm" ? "AI" : "规则"}
+                    </span>
+                  </p>
+                )}
               </div>
             ))}
             {!currentWeekly?.exists && (
@@ -283,3 +336,6 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks, diagno
 }
 
 export { ReportView };
+
+
+

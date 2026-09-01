@@ -303,8 +303,12 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
                 f"{member['checkin_hours'] if member['hours_source'] == 'checkin' else member['task_hours']} 小时"
             )
             member["summary_source"] = "rule"
-    insight, insight_source, insight_err = _llm_overall_insight(project_id, start, summary, risks)
-    if not insight:
+    insight_struct, insight_source, insight_err = _llm_overall_insight(project_id, start, summary, risks)
+    if insight_struct:
+        insight = "".join(
+            ["本周亮点：" + "；".join(insight_struct["highlights"]) + "。", "风险与归因：" + "；".join(insight_struct["risks"]) + "。", "下步建议：" + "；".join(insight_struct["actions"]) + "。"]
+        )
+    else:
         insight = _rule_insight(summary, risks, next_actions); insight_source = "rule"
     if member_source == "llm" and insight_source == "llm": source = "llm"
     elif "llm" in (member_source, insight_source): source = "mixed"
@@ -314,7 +318,7 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
         "project_id": project_id, "project_name": project["name"],
         "period": {"start_date": start_s, "end_date": end_s, "week_start": start_s},
         "summary": summary, "highlights": highlights, "risks": risks, "next_actions": next_actions,
-        "members": members, "insight": insight, "insight_source": insight_source,
+        "members": members, "insight_struct": insight_struct or None, "insight": insight, "insight_source": insight_source,
         "source": source, "llm_error": llm_error, "generated_at": now_iso(), "stored": False,
         "disclaimer": "周报只汇总已有项目事实，不虚构完成情况；确认贡献与待确认贡献分开，打卡工时优先且不与任务工时相加。",
     }
@@ -339,7 +343,7 @@ def _llm_member_summaries(project_id: int, week: date, member_stats: list[dict[s
         "members": [{"user_id": m["user_id"], "name": m["name"], "completed_tasks": m["completed_tasks"], "active_tasks": m["active_tasks"], "checkin_count": m["checkin_count"], "actual_hours": m["actual_hours"]} for m in member_stats],
     }
     prompt = (
-        "你是协作账本的周报助手。为每位成员写一句中文产出摘要，只依据注入的事实统计，禁止编造、禁止排名、禁止人格标签。"
+        "你是协作账本的周报助手。为每位成员写一两句中文产出摘要（产出内容 + 依据的统计事实），只依据注入的事实统计，禁止编造、禁止排名、禁止人格标签。"
         "返回 JSON 对象，含 summaries 数组，每项含 user_id 与 summary。\n"
         + json.dumps(payload, ensure_ascii=False)
     )
@@ -351,22 +355,35 @@ def _llm_member_summaries(project_id: int, week: date, member_stats: list[dict[s
         return {}, "rule", str(exc)
 
 
-def _llm_overall_insight(project_id: int, week: date, summary: dict[str, Any], risks: list[str]) -> tuple[str, str, Optional[str]]:
-    """LLM 整体洞察：进度一句 + 风险归因一句 + 下步建议一句，不含排名。失败回退规则 next_actions。"""
+def _llm_overall_insight(project_id: int, week: date, summary: dict[str, Any], risks: list[str]) -> tuple[dict[str, Any], str, Optional[str]]:
+    """LLM 结构化整体分析：亮点/风险归因/下步建议分条输出。失败回退规则。"""
     if not AgentConfigAvailable():
-        return "", "rule", None
+        return {}, "rule", None
     payload = {"project_id": project_id, "week_start": week.isoformat(), "summary": summary, "risks": risks}
     prompt = (
-        "你是协作账本的周报助手。基于注入的本周真实统计与风险，写一句中文整体洞察，包含：整体进度一句、风险归因一句、下步建议一句；"
-        "禁止编造数字、禁止排名、禁止人格标签。返回 JSON 对象，含 insight 字符串。\n"
+        "你是协作账本的周报分析助手。基于注入的本周真实统计与风险，输出结构化中文分析："
+        "highlights 数组（2-3 条本周亮点，须引用注入的真实数字）；risks 数组（1-3 条风险与归因，无风险则给需关注事项）；"
+        "actions 数组（2-3 条下步建议，具体可执行）。禁止编造数字、禁止排名、禁止人格标签。"
+        "返回 JSON 对象，含 highlights、risks、actions 三个字符串数组。\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     try:
         data = llm_json(prompt, _weekly_llm_timeout())
-        text = str(data.get("insight") or "").strip()
-        return (text, "llm", None) if text else ("", "rule", "LLM 未返回整体洞察")
+
+        def _clean_list(value):
+            result = [str(item).strip() for item in (value or []) if str(item).strip()]
+            return result[:4]
+
+        struct = {
+            "highlights": _clean_list(data.get("highlights")),
+            "risks": _clean_list(data.get("risks")),
+            "actions": _clean_list(data.get("actions")),
+        }
+        if not any(struct.values()):
+            return {}, "rule", "LLM 未返回结构化分析"
+        return struct, "llm", None
     except Exception as exc:
-        return "", "rule", str(exc)
+        return {}, "rule", str(exc)
 
 
 def AgentConfigAvailable() -> bool:
