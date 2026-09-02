@@ -5,12 +5,14 @@ import hmac
 import json
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 import backend.main as api
 import backend.routers.integrations as integrations
 import backend.routers.integration_platforms as platform_routes
-from backend.services.platform_adapters import StandardEvent
+import backend.services.platform_adapters as platform_adapters
+from backend.services.platform_adapters import AdapterError, StandardEvent, TencentDocAdapter
 
 
 def _client() -> TestClient:
@@ -38,9 +40,13 @@ class _FakeDocumentAdapter:
     def configured(self):
         return True
 
+    def verify_credentials(self, access_token, open_id):
+        return None
+
     def fetch_events(self, access_token, config):
         assert access_token == "tencent-token"
         assert config["resource_id"] == "doc-001"
+        assert config["open_id"] == "owner-doc"
         return [StandardEvent(
             external_id="tencent_doc:doc-001:v2",
             event_type="document_updated",
@@ -52,6 +58,66 @@ class _FakeDocumentAdapter:
             payload={"version": "v2"},
         )]
 
+
+
+def test_tencent_doc_adapter_uses_official_headers_and_file_id_path(monkeypatch):
+    monkeypatch.setenv("TENCENT_DOC_APP_ID", "client-id")
+    monkeypatch.setenv("TENCENT_DOC_API_BASE", "https://docs.qq.com")
+    calls = []
+    file_id = "300000000" + chr(36) + "AAAAAAAAAAAA"
+
+    def fake_get(url, *, headers, params=None, timeout=None):
+        calls.append({"url": url, "headers": headers, "params": params, "timeout": timeout})
+        if url.endswith("/util/converter"):
+            return httpx.Response(200, json={"ret": 0, "data": {"fileID": file_id}}, request=httpx.Request("GET", url))
+        return httpx.Response(200, json={"ret": 0, "data": {
+            "ID": file_id,
+            "title": "测试文档",
+            "url": "https://docs.qq.com/doc/DAAAAAAAAAAAA",
+            "lastModifyTime": 1788257462,
+            "lastModifyName": "测试用户",
+        }}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(platform_adapters.httpx, "get", fake_get)
+    events = TencentDocAdapter().fetch_events("access-token", {
+        "resource_type": "document",
+        "resource_id": "DAAAAAAAAAAAA",
+        "resource_url": "https://docs.qq.com/doc/DAAAAAAAAAAAA",
+        "open_id": "open-id",
+    })
+    assert len(events) == 1 and events[0].title == "测试文档"
+    assert calls[0]["params"] == {"type": 2, "value": "DAAAAAAAAAAAA"}
+    assert calls[1]["url"] == f"https://docs.qq.com/openapi/drive/v2/files/{file_id}/metadata"
+    assert calls[1]["headers"] == {
+        "Accept": "application/json",
+        "Access-Token": "access-token",
+        "Client-Id": "client-id",
+        "Open-Id": "open-id",
+    }
+
+
+def test_tencent_doc_adapter_rejects_untrusted_base_and_path(monkeypatch):
+    monkeypatch.setenv("TENCENT_DOC_APP_ID", "client-id")
+    calls = []
+
+    def fake_get(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("不应向非允许的腾讯文档请求目标发起请求")
+
+    monkeypatch.setattr(platform_adapters.httpx, "get", fake_get)
+    monkeypatch.setenv("TENCENT_DOC_API_BASE", "https://evil.example")
+    with pytest.raises(AdapterError, match="API 根地址"):
+        TencentDocAdapter().fetch_events("access-token", {"resource_id": "file-id", "open_id": "open-id"})
+    assert not calls
+
+    monkeypatch.setenv("TENCENT_DOC_API_BASE", "https://docs.qq.com")
+    with pytest.raises(AdapterError, match="仅允许官方查询文档元信息接口"):
+        TencentDocAdapter().fetch_events("access-token", {
+            "resource_id": "file-id",
+            "open_id": "open-id",
+            "api_path": "/openapi/drive/v2/files/{fileID}/collaborators",
+        })
+    assert not calls
 
 def test_platform_catalog_connection_binding_sync_and_dedup(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path, "platform-flow.db")
@@ -86,6 +152,59 @@ def test_platform_catalog_connection_binding_sync_and_dedup(monkeypatch, tmp_pat
     assert events["total"] == 1 and events["items"][0]["event_type"] == "document_updated"
     assert contributions["total"] == 1 and contributions["items"][0]["status"] == "pending"
 
+
+def test_document_sync_does_not_use_another_users_connection(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "connection-owner.db")
+    monkeypatch.setenv("TENCENT_DOC_APP_ID", "client-id")
+    monkeypatch.setenv("TENCENT_DOC_API_BASE", "https://docs.qq.com")
+    adapter_calls = []
+
+    class GuardAdapter:
+        platform = "tencent_doc"
+
+        def configured(self):
+            return True
+
+        def verify_credentials(self, access_token, open_id):
+            return None
+
+        def fetch_events(self, access_token, config):
+            adapter_calls.append((access_token, config))
+            return []
+
+    monkeypatch.setitem(integrations.ADAPTERS, "tencent_doc", GuardAdapter())
+    owner_client = _client()
+    owner = _account(owner_client, "connection-owner@example.com")
+    project_id = _project(owner_client)
+    connected = owner_client.post("/api/integrations/tencent_doc/connections", json={
+        "access_token": "owner-token",
+        "external_account_id": "owner-open-id",
+        "external_username": "Owner",
+    })
+    assert connected.status_code == 201
+    integration = owner_client.post(f"/api/projects/{project_id}/integrations", json={
+        "platform": "tencent_doc",
+        "resource_type": "document",
+        "resource_id": "doc-001",
+        "actor_user_id": owner["id"],
+    })
+    assert integration.status_code == 201
+    integration_id = integration.json()["id"]
+
+    replacement_client = _client()
+    replacement = _account(replacement_client, "replacement-owner@example.com")
+    assert owner_client.post(f"/api/projects/{project_id}/members", json={
+        "user_id": replacement["id"], "role": "member",
+    }).status_code == 201
+    replacement_id = replacement["id"]
+    owner_id = owner["id"]
+    assert owner_client.patch(f"/api/projects/{project_id}/members/{replacement_id}", json={"role": "owner"}).status_code == 200
+    assert owner_client.patch(f"/api/projects/{project_id}/members/{owner_id}", json={"role": "member"}).status_code == 200
+
+    response = replacement_client.post(f"/api/projects/{project_id}/integrations/{integration_id}/sync", json={})
+    assert response.status_code == 502
+    assert "平台连接已断开" in response.json()["error"]["message"]
+    assert adapter_calls == []
 
 def _insert_github_connection_and_integration(user_id: int, project_id: int) -> int:
     conn = api.db(); stamp = integrations._now()
@@ -190,3 +309,29 @@ def test_github_statistics_filters_repository_and_includes_end_date(monkeypatch,
     assert all_stats["members"][0]["commits"] == 2
     assert filtered["members"][0]["commits"] == 1
     assert filtered["members"][0]["additions"] == 4
+
+
+def test_tencent_doc_connection_rejects_invalid_credentials(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, "connection-invalid.db")
+
+    class RejectAdapter:
+        platform = "tencent_doc"
+
+        def configured(self):
+            return True
+
+        def verify_credentials(self, access_token, open_id):
+            raise AdapterError("腾讯文档 API 错误（20103）：token 无效")
+
+    monkeypatch.setitem(integrations.ADAPTERS, "tencent_doc", RejectAdapter())
+    client = _client()
+    _account(client, "connection-invalid@example.com")
+    rejected = client.post("/api/integrations/tencent_doc/connections", json={
+        "access_token": "bad-token",
+        "external_account_id": "owner-open-id",
+        "external_username": "Owner",
+    })
+    assert rejected.status_code == 502
+    assert "token 无效" in rejected.json()["error"]["message"]
+    listed = client.get("/api/integrations/connections").json()
+    assert all(item["platform"] != "tencent_doc" for item in listed["items"])

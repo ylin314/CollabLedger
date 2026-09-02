@@ -31,7 +31,7 @@ router = APIRouter()
 PLATFORM_CATALOG = [
     {"platform": "github", "name": "GitHub", "category": "code", "oauth_supported": True, "scopes": ["repo", "read:org"], "enabled": True},
     {"platform": "feishu", "name": "飞书", "category": "document", "oauth_supported": True, "scopes": ["wiki:read", "docx:read"], "enabled": False},
-    {"platform": "tencent_doc", "name": "腾讯文档", "category": "document", "oauth_supported": False, "scopes": ["document:read"], "enabled": False},
+    {"platform": "tencent_doc", "name": "腾讯文档", "category": "document", "oauth_supported": False, "scopes": ["scope.drive.file.metadata.readonly"], "enabled": False},
 ]
 SUPPORTED_PLATFORMS = {item["platform"] for item in PLATFORM_CATALOG}
 
@@ -119,7 +119,8 @@ def create_platform_connection(platform: str, payload: dict[str, Any], request: 
             account_id = str(payload.get("external_account_id") or "").strip()
             if not token or not account_id:
                 fail(422, "VALIDATION_ERROR", "腾讯文档连接需要 access_token 与 external_account_id")
-            identity = PlatformIdentity(account_id, str(payload.get("external_username") or account_id), token, ["document:read"])
+            ADAPTERS[platform].verify_credentials(token, account_id)
+            identity = PlatformIdentity(account_id, str(payload.get("external_username") or account_id), token, ["scope.drive.file.metadata.readonly"])
         else:
             code = str(payload.get("code") or "").strip()
             state = str(payload.get("state") or "").strip()
@@ -221,18 +222,25 @@ def create_project_integration(project_id: int, payload: dict[str, Any], request
     return result
 
 
-def _sync_document_integration(conn: sqlite3.Connection, integration: sqlite3.Row, project: sqlite3.Row) -> dict[str, Any]:
+def _sync_document_integration(conn: sqlite3.Connection, integration: sqlite3.Row, project: sqlite3.Row, user_id: int) -> dict[str, Any]:
     platform = str(integration["platform"])
     adapter = ADAPTERS.get(platform)
     if not adapter:
         raise AdapterError("当前平台没有可用适配器")
-    connection = conn.execute("SELECT * FROM platform_connections WHERE id=? AND status='active'", (integration["connection_id"],)).fetchone()
+    connection = conn.execute(
+        "SELECT * FROM platform_connections WHERE id=? AND user_id=? AND status='active'",
+        (integration["connection_id"], user_id),
+    ).fetchone()
     if not connection:
         raise AdapterError("平台连接已断开")
     token = _decrypt(connection["credentials_ref"])
     if not token:
         raise AdapterError("平台凭据不可用，请重新连接")
     config = _config_dict(integration["config"])
+    if platform == "tencent_doc":
+        # 腾讯文档官方 Open API 要求 Client-Id、Open-Id、Access-Token 三元组；
+        # Open-Id 来自当前用户连接，不能使用全局配置以免串号。
+        config["open_id"] = str(connection["external_account_id"] or "")
     events = adapter.fetch_events(token, config)
     target_user_id = int(config.get("actor_user_id") or project["owner_id"])
     created = skipped = 0
@@ -256,7 +264,7 @@ def _sync_document_integration(conn: sqlite3.Connection, integration: sqlite3.Ro
 
 @router.post("/api/projects/{project_id}/integrations/{integration_id}/sync")
 def sync_project_integration(project_id: int, integration_id: int, payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    conn = db(); project, _, _ = ensure_project_access(conn, project_id, request, "owner"); ensure_writable(project)
+    conn = db(); project, user, _ = ensure_project_access(conn, project_id, request, "owner"); ensure_writable(project)
     integration = conn.execute("SELECT * FROM project_integrations WHERE id=? AND project_id=? AND enabled=1", (integration_id, project_id)).fetchone()
     if not integration:
         conn.close(); fail(404, "NOT_FOUND", "项目平台集成不存在或已停用")
@@ -266,7 +274,7 @@ def sync_project_integration(project_id: int, integration_id: int, payload: dict
         return github_sync(project_id, {"config": config}, request)
     job_id = _insert_job(conn, integration_id)
     try:
-        result = _sync_document_integration(conn, integration, project)
+        result = _sync_document_integration(conn, integration, project, int(user["id"]))
         conn.commit(); _finish_job(conn, job_id, status="success")
     except AdapterError as exc:
         conn.rollback(); _finish_job(conn, job_id, error=str(exc)[:1000], status="failed")

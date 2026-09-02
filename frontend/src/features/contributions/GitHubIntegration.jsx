@@ -232,8 +232,8 @@ function GitHubIntegration({ project, role, currentUserId, onToast, onReload }) 
         <details className="integration-details" open>
           <summary>连接腾讯文档访问凭据</summary>
           <div className="integration-form-row">
-            <input type="password" autoComplete="off" value={tencentCredentials.access_token} onChange={(event) => setTencentCredentials((current) => ({ ...current, access_token: event.target.value }))} placeholder="访问令牌（不会回显）" />
-            <input value={tencentCredentials.external_account_id} onChange={(event) => setTencentCredentials((current) => ({ ...current, external_account_id: event.target.value }))} placeholder="账号标识" />
+            <input type="password" autoComplete="off" value={tencentCredentials.access_token} onChange={(event) => setTencentCredentials((current) => ({ ...current, access_token: event.target.value }))} placeholder="Access Token（不会回显）" />
+            <input value={tencentCredentials.external_account_id} onChange={(event) => setTencentCredentials((current) => ({ ...current, external_account_id: event.target.value }))} placeholder="Open ID（Token 响应中的 user_id）" />
             <input value={tencentCredentials.external_username} onChange={(event) => setTencentCredentials((current) => ({ ...current, external_username: event.target.value }))} placeholder="显示名称（可选）" />
             <button className="primary-button" disabled={busy} onClick={() => run("connect-tencent", connectTencent)}>保存连接</button>
           </div>
@@ -260,11 +260,10 @@ function GitHubIntegration({ project, role, currentUserId, onToast, onReload }) 
               {activeConnections.tencent_doc && <option value="tencent_doc">腾讯文档</option>}
             </select>
             <select value={resource.resource_type} onChange={(event) => setResource((current) => ({ ...current, resource_type: event.target.value }))}>
-              <option value="document">单文档</option><option value="wiki_space">知识空间</option>
+              <option value="document">单文档</option>{resource.platform === "feishu" && <option value="wiki_space">知识空间</option>}
             </select>
-            <input value={resource.resource_id} onChange={(event) => setResource((current) => ({ ...current, resource_id: event.target.value }))} placeholder="资源 ID" />
+            <input value={resource.resource_id} onChange={(event) => setResource((current) => ({ ...current, resource_id: event.target.value }))} placeholder="资源 ID（fileID 或文档链接编码 ID）" />
             <input value={resource.resource_url} onChange={(event) => setResource((current) => ({ ...current, resource_url: event.target.value }))} placeholder="资源链接（可选）" />
-            {resource.platform === "tencent_doc" && <input value={resource.api_path} onChange={(event) => setResource((current) => ({ ...current, api_path: event.target.value }))} placeholder="开放 API 路径" />}
             <button className="primary-button" disabled={busy} onClick={() => run("bind-document", bindDocumentPlatform)}>绑定资源</button>
           </div>
         </details>
