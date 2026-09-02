@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { getJson, sendJson } from "../../api/client";
 import { PageTitle } from "../../shared/components";
+import ReactMarkdown from "react-markdown";
 
 function AgentView({ project, tasks = [], online, onRecommend, role }) {
   const unassigned = tasks.find((task) => !task.assignee_id) || tasks[0];
@@ -201,8 +202,12 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
                 <div className="message-avatar">
                   {message.role === "agent" ? "✦" : "我"}
                 </div>
-                <div className="message-bubble">
-                  {message.text}
+                <div className="message-bubble bubble-md">
+                  {message.role === "agent" ? (
+                    <ReactMarkdown>{message.text}</ReactMarkdown>
+                  ) : (
+                    message.text
+                  )}
                   {message.meta && <small>{message.meta}</small>}
                   {message.warning && <small>{message.warning}</small>}
                   {message.citations?.length ? (
@@ -211,7 +216,7 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
                         <span
                           key={`${citation.type}-${citation.task_id || citation.user_id || citationIndex}`}
                         >
-                          {citation.title || citation.name || citation.type}
+                          {citation.message || citation.title || citation.name || citation.type}
                         </span>
                       ))}
                     </div>
@@ -342,3 +347,4 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
 }
 
 export { AgentView };
+

@@ -154,7 +154,7 @@ def test_agent_llm_exception_falls_back_to_rules(tmp_path, monkeypatch):
                     "rule": "覆盖延期、临近截止、无负责人和高负载四类风险；按严重度降序排列"}
         return {"project": {"name": "测试"}, "tasks": [], "members": [],
                 "report": {"overall": {"tasks": 0, "completed": 0}},
-                "risks": {"risks": []}, "load": {"members": []}}
+                "risks": {"risks": [{"message": "任务「测试任务」已延期", "level": "high", "rule": "状态为延期/未完成"}]}, "load": {"members": []}}
 
     runtime.tools.run = fake_run
     result = runtime.run(1, "项目风险如何？")

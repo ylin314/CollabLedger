@@ -2073,3 +2073,43 @@ button:active {
   font-size: 10px;
   font-weight: 700;
 }
+
+/* ===== Agent 气泡 Markdown 样式 ===== */
+.bubble-md > :first-child {
+  margin-top: 0;
+}
+
+.bubble-md > :last-child {
+  margin-bottom: 0;
+}
+
+.bubble-md p {
+  margin: 6px 0;
+  line-height: 1.7;
+}
+
+.bubble-md strong {
+  font-weight: 700;
+}
+
+.bubble-md ul,
+.bubble-md ol {
+  margin: 6px 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 3px;
+}
+
+.bubble-md h3,
+.bubble-md h4 {
+  margin: 8px 0 4px;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+
+.bubble-md code {
+  padding: 1px 4px;
+  background: rgba(21, 23, 25, 0.08);
+  border-radius: 3px;
+  font-size: 12px;
+}
