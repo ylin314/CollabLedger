@@ -1,6 +1,7 @@
 from backend import main as api
 from backend.agent import AgentConfig, AgentRuntime
 import json
+import pytest
 from backend.agent.llm import LLMClient
 
 
@@ -215,3 +216,125 @@ def test_agent_conversation_isolated_by_user_and_weekly_tool_is_read_only(tmp_pa
     memory.append(1, "user", "用户二", user_id=2)
     assert [item["content"] for item in memory.recent(1, user_id=1)] == ["用户一"]
     assert [item["content"] for item in memory.recent(1, user_id=2)] == ["用户二"]
+
+
+def test_agent_clarify_action_returns_question(tmp_path):
+    runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="test"))
+    runtime.tools.run = lambda project_id, name, arguments=None: {
+        "project": {"name": "测试"},
+        "tasks": [],
+        "members": [],
+        "report": {"overall": {}},
+        "risks": {"risks": []},
+        "load": {"members": []},
+    }
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: json.dumps(
+        {"action": "clarify", "question": "你想查看哪一个任务？"}, ensure_ascii=False
+    )
+
+    result = runtime.run(1, "帮我看看这个任务")
+
+    assert result["source"] == "llm"
+    assert result["answer"] == "你想查看哪一个任务？"
+    assert result["tool_trace"] == [{"tool": "snapshot", "args": {}, "ok": True, "error": None}]
+
+
+def test_agent_platform_activity_tool_loop_and_task_name_extraction(tmp_path):
+    runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="test"))
+    decisions = iter(
+        [
+            {"action": "tool", "tool": "platform_activity", "args": {"source": "github", "period": "this_week"}},
+            {"action": "answer", "answer": "**本周 GitHub 活动**已按入库记录完成分析。"},
+        ]
+    )
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: json.dumps(next(decisions), ensure_ascii=False)
+
+    def fake_run(project_id, name, arguments=None):
+        if name == "platform_activity":
+            assert arguments == {"source": "github", "period": "this_week"}
+            return {
+                "project_id": project_id,
+                "total": 3,
+                "by_source": {"github": 3},
+                "by_status": {"confirmed": 2, "pending": 1, "disputed": 0},
+                "by_member": [{"user_id": 2, "name": "成员甲", "count": 3}],
+            }
+        return {
+            "project": {"name": "测试"},
+            "tasks": [{"id": 8, "title": "开发登录页", "status": "unassigned"}],
+            "members": [],
+            "report": {"overall": {}},
+            "risks": {"risks": []},
+            "load": {"members": []},
+        }
+
+    runtime.tools.run = fake_run
+    result = runtime.run(1, "GitHub 上这周谁提交最多？")
+
+    assert result["source"] == "llm"
+    assert result["facts"]["platform_activity"]["by_status"]["pending"] == 1
+    assert result["tool_trace"][-1]["tool"] == "platform_activity"
+    assert any(item["type"] == "platform_activity" for item in result["citations"])
+    assert runtime._tool_args("请为开发登录页推荐负责人", result["facts"]) == {"task_name": "开发登录页"}
+    with pytest.raises(ValueError, match="不支持的平台来源"):
+        runtime.tools.platform_activity(1, source="unknown")
+
+
+def test_agent_answer_fact_gate_requires_weekly_tool(tmp_path):
+    runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="test"))
+    decisions = iter(
+        [
+            {"action": "answer", "answer": "没有读取周报就直接回答"},
+            {"action": "answer", "answer": "本周期还没有已生成周报。"},
+        ]
+    )
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: json.dumps(next(decisions), ensure_ascii=False)
+
+    def fake_run(project_id, name, arguments=None):
+        if name == "weekly_report":
+            return {"exists": False, "period": {"start_date": "2026-08-31", "end_date": "2026-09-06"}}
+        return {
+            "project": {"name": "测试"},
+            "tasks": [],
+            "members": [],
+            "report": {"overall": {}},
+            "risks": {"risks": []},
+            "load": {"members": []},
+        }
+
+    runtime.tools.run = fake_run
+    result = runtime.run(1, "帮我总结一下这周的工作")
+
+    assert result["answer"] == "本周期还没有已生成周报。"
+    assert [item["tool"] for item in result["tool_trace"]] == ["snapshot", "weekly_report"]
+    assert result["tool_trace"][-1]["phase"] == "answer_fact_gate"
+    assert result["facts"]["weekly_report"]["exists"] is False
+
+
+def test_agent_recommendation_fallback_uses_dedicated_tool(tmp_path):
+    runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="test"))
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: (_ for _ in ()).throw(RuntimeError("LLM 超时"))
+
+    def fake_run(project_id, name, arguments=None):
+        if name == "recommend":
+            assert arguments == {"task_name": "部署脚本优化"}
+            return {
+                "task_name": "部署脚本优化",
+                "recommendations": [{"name": "成员甲", "score": 80, "reasons": {"summary": "负载合适。"}}],
+            }
+        return {
+            "project": {"name": "测试"},
+            "tasks": [{"id": 8, "title": "部署脚本优化", "status": "unassigned", "assignee_id": None}],
+            "members": [],
+            "report": {"overall": {}},
+            "risks": {"risks": []},
+            "load": {"members": []},
+        }
+
+    runtime.tools.run = fake_run
+    result = runtime.run(1, "这个任务应该给谁？")
+
+    assert result["source"] == "fallback"
+    assert "成员甲" in result["answer"]
+    assert result["tool_trace"][-1]["tool"] == "recommend"
+    assert result["tool_trace"][-1]["phase"] == "fallback_rescue"

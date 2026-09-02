@@ -10,7 +10,7 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
   const [messages, setMessages] = useState([
     {
       role: "agent",
-      text: "你好，我是协作 Agent。可以帮你分析项目风险、生成周报，或推荐任务负责人。",
+      text: "你好，我是协作 Agent。可以帮你分析项目风险、查看已生成周报，或推荐任务负责人。",
     },
   ]);
   const [input, setInput] = useState("");
@@ -20,7 +20,7 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
   );
   const [sessions, setSessions] = useState([]);
 
-  function welcome(text = "你好，我是协作 Agent。可以帮你分析项目风险、生成周报，或推荐任务负责人。") {
+  function welcome(text = "你好，我是协作 Agent。可以帮你分析项目风险、查看已生成周报，或推荐任务负责人。") {
     return [{ role: "agent", text }];
   }
 

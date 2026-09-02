@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, asdict
 
-TASK_ID_PATTERN = re.compile(r"(?:任务|task)\s*[#号]?\s*(\d+)")
+TASK_ID_PATTERN = re.compile(r"(?:任务|task)\s*[#号]?\s*(\d+)", flags=re.IGNORECASE)
 
 
 @dataclass(frozen=True)

@@ -42,6 +42,13 @@ class AgentTools:
         if not candidates:
             titles = [str(t.get("title") or "") for t in (snapshot.get("tasks") or [])][:10]
             return {"found": False, "error": "未找到标题包含「" + name + "」的任务", "candidates": titles}
+        if len(candidates) > 1:
+            return {
+                "found": False,
+                "ambiguous": True,
+                "error": "任务名称匹配到多项，请补充更完整的标题或任务 ID",
+                "candidates": [{"id": task.get("id"), "title": task.get("title")} for task in candidates[:10]],
+            }
         task = candidates[0]
         detail = internal_task_detail(project_id, int(task.get("id")))
         detail["matched_by"] = "task_name"
@@ -65,9 +72,33 @@ class AgentTools:
 
         return internal_member_load(project_id)
 
-    def platform_activity(self, project_id: int, source: str | None = None) -> dict[str, Any]:
-        """按平台来源聚合真实贡献记录，保留状态分布且不执行任何写操作。"""
+    def platform_activity(
+        self,
+        project_id: int,
+        source: str | None = None,
+        period: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
+        """按平台来源和时间范围聚合真实贡献记录，保留状态分布且不执行任何写操作。"""
+        from datetime import date, timedelta
+
         from backend.db import connect
+
+        allowed_sources = {"github", "feishu", "tencent_doc", "manual"}
+        if source and source not in allowed_sources:
+            raise ValueError("不支持的平台来源")
+        if period not in (None, "this_week"):
+            raise ValueError("不支持的时间范围")
+        if period == "this_week":
+            today = date.today()
+            start_date = (today - timedelta(days=today.weekday())).isoformat()
+            end_date = (today + timedelta(days=6 - today.weekday())).isoformat()
+        for value in (start_date, end_date):
+            if value:
+                date.fromisoformat(value)
+        if start_date and end_date and start_date > end_date:
+            raise ValueError("开始日期不能晚于结束日期")
 
         conn = connect()
         try:
@@ -76,6 +107,13 @@ class AgentTools:
             if source:
                 where.append("c.source=?")
                 params.append(source)
+            date_expr = "substr(COALESCE(c.occurred_at,c.created_at),1,10)"
+            if start_date:
+                where.append(date_expr + ">=?")
+                params.append(start_date)
+            if end_date:
+                where.append(date_expr + "<=?")
+                params.append(end_date)
             where_sql = " AND ".join(where)
             rows = conn.execute(
                 "SELECT c.source,c.user_id,u.name member_name,c.status,COUNT(*) cnt,"
@@ -90,31 +128,72 @@ class AgentTools:
                 "ORDER BY COALESCE(c.occurred_at,c.created_at) DESC LIMIT 5",
                 params,
             ).fetchall()
+            integration_where = ["pi.project_id=?"]
+            integration_params: list[Any] = [project_id]
+            if source and source != "manual":
+                integration_where.append("pi.platform=?")
+                integration_params.append(source)
+            integration_rows = conn.execute(
+                "SELECT pi.id integration_id,pi.platform,pi.enabled,pc.status connection_status,"
+                "pc.external_username,pc.last_synced_at FROM project_integrations pi "
+                "JOIN platform_connections pc ON pc.id=pi.connection_id WHERE "
+                + " AND ".join(integration_where)
+                + " ORDER BY pi.id",
+                integration_params,
+            ).fetchall()
+            integrations = []
+            for row in integration_rows:
+                last_job = conn.execute(
+                    "SELECT status,finished_at,error FROM sync_jobs WHERE integration_id=? ORDER BY id DESC LIMIT 1",
+                    (row["integration_id"],),
+                ).fetchone()
+                item = dict(row)
+                item["enabled"] = bool(item.get("enabled"))
+                item["last_job_status"] = last_job["status"] if last_job else None
+                item["last_job_finished_at"] = last_job["finished_at"] if last_job else None
+                item["last_job_has_error"] = bool(last_job and last_job["error"])
+                integrations.append(item)
         finally:
             conn.close()
 
         by_source: dict[str, int] = {}
+        by_source_status: dict[str, dict[str, int]] = {}
         by_member: dict[str, dict[str, Any]] = {}
         by_status = {"confirmed": 0, "pending": 0, "disputed": 0}
         for row in rows:
             src_name = row["source"] or "manual"
             count = int(row["cnt"] or 0)
-            by_source[src_name] = by_source.get(src_name, 0) + count
             status = str(row["status"] or "pending")
+            by_source[src_name] = by_source.get(src_name, 0) + count
+            source_status = by_source_status.setdefault(src_name, {"confirmed": 0, "pending": 0, "disputed": 0})
+            source_status[status] = source_status.get(status, 0) + count
             by_status[status] = by_status.get(status, 0) + count
             member_key = str(row["user_id"])
-            member = by_member.setdefault(member_key, {"user_id": row["user_id"], "name": row["member_name"] or "未知成员", "count": 0, "quantity": 0.0})
+            member = by_member.setdefault(
+                member_key,
+                {
+                    "user_id": row["user_id"],
+                    "name": row["member_name"] or "未知成员",
+                    "count": 0,
+                    "quantity": 0.0,
+                    "status_counts": {"confirmed": 0, "pending": 0, "disputed": 0},
+                },
+            )
             member["count"] += count
             member["quantity"] = round(member["quantity"] + float(row["quantity"] or 0), 2)
+            member["status_counts"][status] = member["status_counts"].get(status, 0) + count
         return {
             "project_id": project_id,
             "source_filter": source,
+            "period": {"kind": period, "start_date": start_date, "end_date": end_date},
             "total": sum(by_source.values()),
             "by_source": by_source,
+            "by_source_status": by_source_status,
             "by_status": by_status,
             "by_member": list(by_member.values()),
             "recent": [dict(row) for row in recent],
-            "rule": "仅聚合已落库贡献；confirmed、pending、disputed 分开统计，不把待确认贡献伪装为已确认。",
+            "integrations": integrations,
+            "rule": "仅聚合已同步入库贡献；confirmed、pending、disputed 分开统计，不把待确认贡献伪装为已确认；连接和同步状态不包含凭据或原始错误；未接入仅代表系统没有可分析数据，不能推断成员在外部平台是否有实际活动。",
         }
 
     def run(self, project_id: int, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -130,7 +209,7 @@ class AgentTools:
         if tool_name == "weekly_report":
             return self.weekly_report(project_id, args.get("week_start"))
         if tool_name == "platform_activity":
-            return self.platform_activity(project_id, args.get("source"))
+            return self.platform_activity(project_id, args.get("source"), args.get("period"), args.get("start_date"), args.get("end_date"))
         if tool_name == "member_load":
             return self.member_load(project_id)
         raise ValueError(f"未知 Agent 工具: {tool_name}")

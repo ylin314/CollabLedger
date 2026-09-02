@@ -2113,3 +2113,11 @@ button:active {
   border-radius: 3px;
   font-size: 12px;
 }
+
+.bubble-md blockquote {
+  margin: 8px 0 0;
+  padding: 7px 9px;
+  color: #4b5550;
+  background: rgba(21, 23, 25, 0.06);
+  border-left: 3px solid var(--cobalt);
+}
