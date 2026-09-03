@@ -41,6 +41,7 @@ def test_stage2_recommendation_load_risks_and_weekly(tmp_path, monkeypatch):
     busy = owner.post(f"/api/projects/{pid}/tasks", json={"title": "占满前端容量", "assignee_id": frontend_user["id"], "task_type": "前端"}).json()
     assert frontend_dev.post(f"/api/tasks/{busy['id']}/start", json={}).status_code == 200
     owner.post(f"/api/projects/{pid}/tasks", json={"title": "未分配后端接口", "task_type": "后端", "due_date": "2020-01-01"})
+    owner.post(f"/api/projects/{pid}/tasks", json={"title": "未分配普通任务", "task_type": "后端"})
     done = owner.post(f"/api/projects/{pid}/tasks", json={"title": "已完成后端模块", "assignee_id": backend_user["id"], "task_type": "后端", "estimated_hours": 4}).json()
     backend_dev.post(f"/api/tasks/{done['id']}/start", json={})
     backend_dev.post(f"/api/tasks/{done['id']}/complete", json={"actual_hours": 3})
@@ -346,3 +347,61 @@ def test_left_member_is_excluded_from_current_load_reports_weekly_and_recommenda
     removal_log = conn.execute("SELECT action,from_status,to_status,note FROM task_logs WHERE task_id=? AND action='member_removed'", (task["id"],)).fetchone()
     assert removal_log["from_status"] == "assigned" and removal_log["to_status"] == "unassigned" and str(member_user["id"]) in removal_log["note"]
     conn.close()
+
+
+
+def test_d2_risk_aggregates_one_row_per_task_with_source_types(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "d2-risk-aggregate.db")
+    monkeypatch.setenv("LLM_API_KEY", "")
+    api.init_db()
+    owner = _client()
+    _account(owner, "聚合风险组长", "d2-aggregate-owner@example.com")
+    pid = owner.post("/api/projects", json={"name": "风险聚合项目"}).json()["id"]
+    task = owner.post(
+        f"/api/projects/{pid}/tasks",
+        json={"title": "逾期关键任务", "priority": "high", "due_date": "2020-01-01"},
+    ).json()
+
+    risks = owner.get(f"/api/projects/{pid}/risks", params={"summarize": 0}).json()["risks"]
+    rows = [item for item in risks if item.get("task_id") == task["id"]]
+
+    assert len(rows) == 1
+    assert rows[0]["type"] == "critical_unassigned"
+    assert rows[0]["source_types"] == ["critical_unassigned", "unassigned_task", "overdue_task"]
+
+
+def test_d2_recommendation_excludes_weighted_high_member(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "d2-weighted-recommend.db")
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("RECOMMEND_SKILL_MODE", "rule")
+    monkeypatch.setenv("RECOMMEND_USE_LLM_SKILL", "false")
+    monkeypatch.setenv("RECOMMEND_USE_LLM_REASON", "false")
+    api.init_db()
+    owner, member = _client(), _client()
+    _account(owner, "加权推荐组长", "d2-weighted-owner@example.com")
+    member_user = _account(member, "加权延期成员", "d2-weighted-member@example.com")
+    pid = owner.post("/api/projects", json={"name": "加权推荐项目"}).json()["id"]
+    code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
+    assert member.post(f"/api/invitations/{code}/accept").status_code == 200
+    assert member.patch("/api/users/me", json={"max_concurrent_tasks": 3}).status_code == 200
+    for index in range(2):
+        task = owner.post(
+            f"/api/projects/{pid}/tasks",
+            json={"title": f"加权延期任务{index}", "assignee_id": member_user["id"]},
+        ).json()
+        assert owner.post(f"/api/tasks/{task['id']}/overdue", json={}).status_code == 200
+
+    load = owner.get(f"/api/projects/{pid}/members/load").json()
+    member_load = next(item for item in load["members"] if item["user_id"] == member_user["id"])
+    assert member_load["load_level"] == "normal"
+    assert member_load["weighted_level"] == "high"
+
+    recommendation = owner.get(
+        f"/api/projects/{pid}/recommendations",
+        params={"task_name": "新的后端任务", "task_type": "后端"},
+    ).json()
+
+    assert member_user["id"] not in [item["user_id"] for item in recommendation["recommendations"]]
+    excluded = next(item for item in recommendation["excluded"] if item["user_id"] == member_user["id"])
+    assert excluded["reason_code"] == "overloaded"
+    assert excluded["weighted_level"] == "high"

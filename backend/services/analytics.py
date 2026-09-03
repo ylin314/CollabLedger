@@ -126,15 +126,25 @@ def internal_project_risks(project_id: int, summarize: bool = False) -> dict[str
     conn = db(); ensure_project(conn, project_id); today = utc_today(); soon = today + timedelta(days=3); risks: list[dict[str, Any]] = []
     tasks = conn.execute("SELECT * FROM tasks WHERE project_id=? AND deleted_at IS NULL AND status!='completed'", (project_id,)).fetchall()
     for task in tasks:
+        task_risks: list[dict[str, Any]] = []
         if task["status"] in ("overdue", "unfinished") or (task["due_date"] and task["due_date"] < today.isoformat()):
-            risks.append(_risk_item("overdue_task", "high", f"任务「{task['title']}」已延期", "状态为延期/未完成，或截止日期早于今天", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
+            task_risks.append(_risk_item("overdue_task", "high", f"任务「{task['title']}」已延期", "状态为延期/未完成，或截止日期早于今天", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
         elif task["due_date"] and task["due_date"] <= soon.isoformat():
-            risks.append(_risk_item("upcoming_deadline", "medium", f"任务「{task['title']}」临近截止", "截止日期在未来 3 天内", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
+            task_risks.append(_risk_item("upcoming_deadline", "medium", f"任务「{task['title']}」临近截止", "截止日期在未来 3 天内", task_id=task["id"], due_date=task["due_date"], status=task["status"]))
         if task["assignee_id"] is None:
             if task["priority"] == "high":
-                risks.append(_risk_item("critical_unassigned", "high", f"关键任务「{task['title']}」无人承接", "高优先级任务未分配负责人（已聚合普通未分配风险）", task_id=task["id"], due_date=task["due_date"], status=task["status"], source_types=["critical_unassigned", "unassigned_task"], unassigned_category="critical"))
+                task_risks.append(_risk_item("critical_unassigned", "high", f"关键任务「{task['title']}」无人承接", "高优先级任务未分配负责人（已聚合普通未分配风险）", task_id=task["id"], due_date=task["due_date"], status=task["status"], source_types=["critical_unassigned", "unassigned_task"], unassigned_category="critical"))
             else:
-                risks.append(_risk_item("unassigned_task", "medium", f"任务「{task['title']}」尚未分配", "任务没有负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"], source_types=["unassigned_task"], unassigned_category="normal"))
+                task_risks.append(_risk_item("unassigned_task", "medium", f"任务「{task['title']}」尚未分配", "任务没有负责人", task_id=task["id"], due_date=task["due_date"], status=task["status"], source_types=["unassigned_task"], unassigned_category="normal"))
+        if task_risks:
+            primary = max(task_risks, key=lambda item: item.get("severity", 0))
+            source_types: list[str] = []
+            for item in (primary, *[item for item in task_risks if item is not primary]):
+                for source_type in item.get("source_types") or [item.get("type")]:
+                    if source_type and source_type not in source_types:
+                        source_types.append(source_type)
+            primary["source_types"] = source_types
+            risks.append(primary)
     for member in internal_member_load(project_id)["members"]:
         if member["weighted_level"] == "high":
             risks.append(_risk_item("high_member_load", "medium", f"{member['name']}当前加权负载为 {member['weighted_load']:.2f}", "加权负载 = Σ状态权重 / 最大并发任务数，> 0.8 为高负载", user_id=member["user_id"], current_task_count=member["current_task_count"], max_concurrent_tasks=member["max_concurrent_tasks"], load_ratio=member["load_ratio"], load_level=member["load_level"], weighted_load=member["weighted_load"], weighted_level=member["weighted_level"]))

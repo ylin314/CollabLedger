@@ -407,14 +407,29 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
         load_item = profile["load"]
         current = int(load_item.get("current_task_count") or 0)
         maximum = max(1, int(load_item.get("max_concurrent_tasks") or 3))
+        weighted_load = float(load_item.get("weighted_load") or 0.0)
+        weighted_level = load_item.get("weighted_level") or ("low" if weighted_load < 0.5 else ("normal" if weighted_load <= 0.8 else "high"))
         if profile["role"] == "viewer":
             excluded.append({"user_id": profile["id"], "name": profile["name"], "role": profile["role"], "reason_code": "viewer", "reason": "只读成员不进入推荐候选"})
             continue
         if profile["role"] == "owner" and not include_owner:
             excluded.append({"user_id": profile["id"], "name": profile["name"], "role": profile["role"], "reason_code": "owner_excluded", "reason": "组长默认不进入推荐候选，避免占用执行名额"})
             continue
-        if current >= maximum:
-            excluded.append({"user_id": profile["id"], "name": profile["name"], "role": profile["role"], "reason_code": "overloaded", "reason": f"已达并发上限 {current}/{maximum}，暂不推荐新任务"})
+        if current >= maximum or weighted_level == "high":
+            reason = (
+                f"加权负载为高（{weighted_load:.2f}），暂不推荐新任务"
+                if weighted_level == "high" and current < maximum
+                else f"已达并发上限 {current}/{maximum}，暂不推荐新任务"
+            )
+            excluded.append({
+                "user_id": profile["id"],
+                "name": profile["name"],
+                "role": profile["role"],
+                "reason_code": "overloaded",
+                "reason": reason,
+                "weighted_load": weighted_load,
+                "weighted_level": weighted_level,
+            })
             continue
         eligible.append(profile)
     ai_scores, ai_notes, skill_source, skill_error = _ai_skill(task, eligible, cfg)
@@ -423,9 +438,10 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
         load_item = profile["load"]
         current = int(load_item.get("current_task_count") or 0)
         maximum = max(1, int(load_item.get("max_concurrent_tasks") or 3))
-        ratio = current / maximum
-        load_score = _clip(1 - ratio)
-        load_high = (load_item.get("load_level") == "high") or ratio > 0.8
+        weighted_load = float(load_item.get("weighted_load") or 0.0)
+        weighted_level = load_item.get("weighted_level") or ("low" if weighted_load < 0.5 else ("normal" if weighted_load <= 0.8 else "high"))
+        load_score = _clip(1 - weighted_load)
+        load_high = weighted_level == "high" or weighted_load > 0.8
         rule_score, matched, type_hits, families = rule_skill(
             profile["skills"],
             profile["history_types"],
@@ -470,7 +486,7 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
         )
         quality_note = ("暂无质量评价，按中性分 0.5 计" if quality_missing else (f"参考历史画像（跨项目）质量 {hist_quality}/5（{hist_profile['quality_samples']} 条评价）" if hist_quality is not None else f"历史质量 {quality_raw}/5（{quality_samples} 条评价）"))
         efficiency_note = ("暂无完成工时，按中性分 0.5 计" if efficiency_missing else (f"参考历史画像（跨项目）工时比 {hist_efficiency}（{hist_profile['efficiency_samples']} 条完成记录）" if hist_efficiency is not None else f"预计/实际工时比 {efficiency_raw}（{efficiency_samples} 条完成记录）"))
-        load_note = f"当前负载偏高 {current}/{maximum}，但仍未超过上限" if load_high else f"当前负载 {current}/{maximum}（{load_item.get('load_label') or '正常'}）"
+        load_note = f"当前加权负载偏高 {weighted_load:.2f}（任务 {current}/{maximum}），但仍未超过并发上限" if load_high else f"当前加权负载 {weighted_load:.2f}（任务 {current}/{maximum}，{load_item.get('weighted_label') or '正常'}）"
         dimensions = {
             "skill": _dimension(skill_score, RECOMMEND_WEIGHTS["skill"], skill_note, [
                 f"成员技能：{('、'.join(profile['skills']) if profile['skills'] else '未填写')}",
@@ -480,7 +496,7 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
             ], extra={"source": local_skill_source, "matched_skills": matched, "skill_families": family_names}),
             "quality": _dimension(quality_score, RECOMMEND_WEIGHTS["quality"], quality_note, [quality_note], samples=quality_samples, missing=quality_missing, extra={"average_quality": quality_raw}),
             "efficiency": _dimension(efficiency_score, RECOMMEND_WEIGHTS["efficiency"], efficiency_note, [efficiency_note], samples=efficiency_samples, missing=efficiency_missing, extra={"efficiency": efficiency_raw}),
-            "load": _dimension(load_score, RECOMMEND_WEIGHTS["load"], load_note, [f"进行中占用 {current} / 上限 {maximum}", load_note], extra={"current_load": f"{current}/{maximum}", "load_level": load_item.get("load_level"), "high": load_high}),
+            "load": _dimension(load_score, RECOMMEND_WEIGHTS["load"], load_note, [f"加权负载 {weighted_load:.2f}", f"任务占用 {current} / 上限 {maximum}", load_note], extra={"current_load": f"{current}/{maximum}", "load_level": load_item.get("load_level"), "weighted_load": weighted_load, "weighted_level": weighted_level, "high": load_high}),
         }
         total = 100 * sum(item["weighted"] for item in dimensions.values())
         evidence = [line for dim in dimensions.values() for line in dim["evidence"]]
@@ -504,6 +520,8 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
                 "efficiency_samples": efficiency_samples,
                 "current_load": f"{current}/{maximum}",
                 "load_level": load_item.get("load_level"),
+                "weighted_load": weighted_load,
+                "weighted_level": weighted_level,
                 "summary": summary,
                 "evidence": evidence,
             },
