@@ -52,10 +52,16 @@ class AgentMemory:
             (project_id,),
         ).fetchone()
         if project_exists:
-            session = conn.execute(
-                "SELECT id FROM agent_sessions WHERE project_id=? AND session_key=?",
-                (project_id, session_id),
-            ).fetchone()
+            if user_id is None:
+                session = conn.execute(
+                    "SELECT id FROM agent_sessions WHERE project_id=? AND user_id IS NULL AND session_key=?",
+                    (project_id, session_id),
+                ).fetchone()
+            else:
+                session = conn.execute(
+                    "SELECT id FROM agent_sessions WHERE project_id=? AND user_id=? AND session_key=?",
+                    (project_id, user_id, session_id),
+                ).fetchone()
             if session:
                 conn.execute(
                     "UPDATE agent_sessions SET updated_at=? WHERE id=?",

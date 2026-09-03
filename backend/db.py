@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.models import Base
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA_SQL = r'''
 CREATE TABLE IF NOT EXISTS users (
@@ -162,7 +162,7 @@ CREATE TABLE IF NOT EXISTS sync_jobs (
 CREATE TABLE IF NOT EXISTS agent_sessions (
  id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, user_id INTEGER,
  session_key TEXT NOT NULL, title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
- UNIQUE(project_id, session_key), FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+ UNIQUE(project_id, user_id, session_key), FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 CREATE TABLE IF NOT EXISTS agent_messages (
@@ -426,12 +426,168 @@ def _add_columns(conn: sqlite3.Connection, table: str, definitions: dict[str, st
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
+def _sqlite_unique_columns(conn: sqlite3.Connection, table: str) -> list[tuple[bool, tuple[str, ...]]]:
+    """返回 SQLite 表上的唯一索引及其列，兼容自动生成的唯一约束索引。"""
+    indexes: list[tuple[bool, tuple[str, ...]]] = []
+    for row in conn.execute(f"PRAGMA index_list({table})").fetchall():
+        index_name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+        is_unique = bool(row["unique"] if isinstance(row, sqlite3.Row) else row[2])
+        columns = tuple(
+            item["name"] if isinstance(item, sqlite3.Row) else item[2]
+            for item in conn.execute(f"PRAGMA index_info({index_name})").fetchall()
+        )
+        indexes.append((is_unique, columns))
+    return indexes
+
+
+def _sqlite_agent_sessions_has_scoped_unique(conn: sqlite3.Connection) -> bool:
+    expected = ("project_id", "user_id", "session_key")
+    return any(is_unique and columns == expected for is_unique, columns in _sqlite_unique_columns(conn, "agent_sessions"))
+
+
+def _backfill_agent_session_users(conn: sqlite3.Connection) -> None:
+    """为旧版共享元数据建立用户副本，但不把旧消息暴露给未知用户。"""
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "agent_memory" not in tables or "users" not in tables:
+        return
+    legacy_rows = conn.execute(
+        """SELECT DISTINCT m.project_id,m.session_id,m.user_id
+           FROM agent_memory m
+           JOIN users u ON u.id=m.user_id
+          WHERE m.user_id IS NOT NULL"""
+    ).fetchall()
+    for row in legacy_rows:
+        project_id, session_key, user_id = row
+        exists = conn.execute(
+            """SELECT 1 FROM agent_sessions
+               WHERE project_id=? AND user_id=? AND session_key=?""",
+            (project_id, user_id, session_key),
+        ).fetchone()
+        if exists:
+            continue
+        source = conn.execute(
+            """SELECT title,created_at,updated_at FROM agent_sessions
+               WHERE project_id=? AND session_key=?
+               ORDER BY CASE WHEN user_id=? THEN 0 WHEN user_id IS NULL THEN 1 ELSE 2 END,id
+               LIMIT 1""",
+            (project_id, session_key, user_id),
+        ).fetchone()
+        if source is None:
+            continue
+        conn.execute(
+            """INSERT INTO agent_sessions(project_id,user_id,session_key,title,created_at,updated_at)
+               VALUES (?,?,?,?,?,?)""",
+            (project_id, user_id, session_key, source["title"], source["created_at"], source["updated_at"]),
+        )
+
+
+def _migrate_agent_sessions_sqlite(conn: sqlite3.Connection) -> None:
+    """将旧的 project+session 唯一键安全升级为 project+user+session。"""
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "agent_sessions" not in tables:
+        return
+    if not _sqlite_agent_sessions_has_scoped_unique(conn):
+        # agent_messages 通过 id 外键依赖此表，因此保留 id 并整体重建，不能直接删约束。
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            conn.execute("BEGIN")
+            conn.execute(
+                """CREATE TABLE agent_sessions__new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL,
+                    user_id INTEGER,
+                    session_key TEXT NOT NULL,
+                    title TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(project_id,user_id,session_key),
+                    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO agent_sessions__new(id,project_id,user_id,session_key,title,created_at,updated_at)
+                   SELECT id,project_id,user_id,session_key,title,created_at,updated_at
+                     FROM agent_sessions"""
+            )
+            conn.execute("DROP TABLE agent_sessions")
+            conn.execute("ALTER TABLE agent_sessions__new RENAME TO agent_sessions")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
+    _backfill_agent_session_users(conn)
+
+
+def _postgres_agent_sessions_constraint_state(inspector) -> tuple[bool, list[str], list[str]]:
+    """返回新约束是否存在，以及应分别删除的旧约束和唯一索引。"""
+    expected = ["project_id", "user_id", "session_key"]
+    has_new = False
+    old_constraints: list[str] = []
+    old_indexes: list[str] = []
+    for item in getattr(inspector, "get_unique_constraints", lambda _: [])("agent_sessions"):
+        columns = item.get("column_names") or []
+        name = item.get("name")
+        if columns == expected:
+            has_new = True
+        elif columns == ["project_id", "session_key"] and name:
+            old_constraints.append(name)
+    for item in getattr(inspector, "get_indexes", lambda _: [])("agent_sessions"):
+        columns = item.get("column_names") or []
+        name = item.get("name")
+        if item.get("unique") and columns == expected:
+            has_new = True
+        elif item.get("unique") and columns == ["project_id", "session_key"] and name:
+            old_indexes.append(name)
+    return has_new, list(dict.fromkeys(old_constraints)), list(dict.fromkeys(old_indexes))
+
+
+def _migrate_agent_sessions_postgresql(connection) -> None:
+    """升级既有 PostgreSQL 表，避免只更新 SQLAlchemy metadata 而不更新真实约束。"""
+    inspector = inspect(connection)
+    has_new, old_constraints, old_indexes = _postgres_agent_sessions_constraint_state(inspector)
+    for name in old_constraints:
+        connection.execute(text(f'ALTER TABLE "agent_sessions" DROP CONSTRAINT IF EXISTS "{name}"'))
+    for name in old_indexes:
+        connection.execute(text(f'DROP INDEX IF EXISTS "{name}"'))
+    if not has_new:
+        connection.execute(text(
+            'ALTER TABLE "agent_sessions" ADD CONSTRAINT "uq_agent_sessions_project_user_key" '
+            'UNIQUE ("project_id","user_id","session_key")'
+        ))
+    # 与 SQLite 保持一致：将旧版共享元数据按已有记忆用户复制到隔离行。
+    connection.execute(text(
+        """INSERT INTO agent_sessions(project_id,user_id,session_key,title,created_at,updated_at)
+           SELECT DISTINCT m.project_id,m.user_id,source.session_key,source.title,source.created_at,source.updated_at
+             FROM agent_memory m
+             JOIN users u ON u.id=m.user_id
+             JOIN LATERAL (
+                 SELECT s.session_key,s.title,s.created_at,s.updated_at
+                   FROM agent_sessions s
+                  WHERE s.project_id=m.project_id AND s.session_key=m.session_id
+                  ORDER BY CASE WHEN s.user_id=m.user_id THEN 0 WHEN s.user_id IS NULL THEN 1 ELSE 2 END,s.id
+                  LIMIT 1
+             ) source ON TRUE
+            WHERE m.user_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM agent_sessions existing
+                   WHERE existing.project_id=m.project_id
+                     AND existing.user_id=m.user_id
+                     AND existing.session_key=m.session_id
+              )"""
+    ))
+
+
 def _initialize_postgresql(path: str | Path | None = None) -> None:
     engine = get_engine(path)
     with engine.begin() as conn:
         inspector = inspect(conn)
         additions = {
             "users": {"avatar_url": "TEXT"},
+            "agent_memory": {"user_id": "INTEGER"},
             "tasks": {"reviewer_id": "INTEGER"},
             "project_invitations": {"is_mentor": "INTEGER NOT NULL DEFAULT 0"},
             "task_review_history": {"updated_at": "VARCHAR(40)"},
@@ -443,6 +599,7 @@ def _initialize_postgresql(path: str | Path | None = None) -> None:
             for name, definition in definitions.items():
                 if name not in existing:
                     conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}'))
+        _migrate_agent_sessions_postgresql(conn)
         conn.execute(text("UPDATE task_review_history SET updated_at=COALESCE(updated_at,created_at)"))
 
 
@@ -459,6 +616,9 @@ def initialize(path: str | Path | None = None) -> None:
     conn = connect(path)
     legacy_contributions = "contributions" in [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='contributions'")] and "status" not in _columns(conn, "contributions")
     conn.executescript(SCHEMA_SQL)
+    # 先补旧版 agent_memory.user_id，再执行会话元数据回填。
+    _add_columns(conn, "agent_memory", {"user_id": "INTEGER"})
+    _migrate_agent_sessions_sqlite(conn)
     # Forward-compatible upgrades for databases created by pre-Alembic versions.
     _add_columns(conn, "users", {"password_hash": "TEXT", "updated_at": "TEXT", "avatar_url": "TEXT"})
     _add_columns(conn, "projects", {"status": "TEXT NOT NULL DEFAULT 'active'", "updated_at": "TEXT", "archived_at": "TEXT", "deleted_at": "TEXT", "classroom_id": "INTEGER"})
@@ -467,7 +627,6 @@ def initialize(path: str | Path | None = None) -> None:
     _add_columns(conn, "task_logs", {"from_status": "TEXT", "to_status": "TEXT"})
     _add_columns(conn, "project_invitations", {"max_uses": "INTEGER NOT NULL DEFAULT 1", "used_count": "INTEGER NOT NULL DEFAULT 0", "revoked": "INTEGER NOT NULL DEFAULT 0", "revoked_at": "TEXT", "updated_at": "TEXT", "is_mentor": "INTEGER NOT NULL DEFAULT 0"})
     _add_columns(conn, "contributions", {"evidence_url": "TEXT", "status": "TEXT NOT NULL DEFAULT 'pending'", "source": "TEXT NOT NULL DEFAULT 'manual'", "occurred_at": "TEXT", "updated_at": "TEXT", "created_by": "INTEGER", "confirmed_by": "INTEGER", "confirmed_at": "TEXT", "confirmation_note": "TEXT", "dispute_note": "TEXT", "deleted_at": "TEXT"})
-    _add_columns(conn, "agent_memory", {"user_id": "INTEGER"})
     _add_columns(conn, "platform_connections", {"external_username": "TEXT", "scopes": "TEXT NOT NULL DEFAULT '[]'", "connected_at": "TEXT", "last_synced_at": "TEXT"})
     _add_columns(conn, "oauth_states", {"session_hash": "TEXT"})
     _add_columns(conn, "recommendations", {

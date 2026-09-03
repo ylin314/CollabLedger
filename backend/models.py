@@ -219,7 +219,7 @@ agent_sessions = table("agent_sessions",
     Column("id", Integer, primary_key=True), Column("project_id", ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
     Column("user_id", ForeignKey("users.id", ondelete="SET NULL")), Column("session_key", String(100), nullable=False),
     Column("title", String(255)), Column("created_at", String(40), nullable=False), Column("updated_at", String(40), nullable=False),
-    UniqueConstraint("project_id", "session_key", name="uq_agent_sessions_project_key"))
+    UniqueConstraint("project_id", "user_id", "session_key", name="uq_agent_sessions_project_user_key"))
 
 agent_messages = table("agent_messages",
     Column("id", Integer, primary_key=True), Column("session_id", ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False),

@@ -49,6 +49,7 @@ def test_postgresql_initialize_adds_new_columns_to_existing_schema(monkeypatch):
                 "project_invitations": {"id"},
                 "task_review_history": {"id", "created_at"},
                 "platform_connections": {"id", "external_account_id", "credentials_ref", "status", "created_at", "updated_at"},
+                "agent_memory": {"id", "project_id", "session_id", "role", "content", "created_at"},
                 "oauth_states": {"state", "user_id", "platform", "redirect_uri", "expires_at", "created_at", "consumed_at"},
             }[table]]
 
@@ -135,3 +136,101 @@ def test_postgresql_url_escapes_special_password(monkeypatch):
     rendered = db._url_text(url)
     assert "p%40ss%3A%2F word" in rendered.replace("%20", " ")
     assert rendered.startswith("postgresql+psycopg://collab:")
+
+
+def test_sqlite_agent_session_scope_migration_preserves_message_foreign_keys(tmp_path):
+    import sqlite3
+
+    database = tmp_path / "agent-session-legacy.db"
+    conn = sqlite3.connect(database)
+    conn.executescript(
+        """
+        PRAGMA foreign_keys=ON;
+        CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, skills TEXT NOT NULL DEFAULT '[]', max_concurrent_tasks INTEGER NOT NULL DEFAULT 3, status TEXT NOT NULL DEFAULT 'offline', created_at TEXT NOT NULL);
+        CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL, owner_id INTEGER, created_at TEXT NOT NULL);
+        CREATE TABLE agent_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, user_id INTEGER,
+            session_key TEXT NOT NULL, title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(project_id, session_key), FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE TABLE agent_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, role TEXT NOT NULL,
+            content TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+        );
+        CREATE TABLE agent_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, session_id TEXT NOT NULL,
+            role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, user_id INTEGER
+        );
+        INSERT INTO users(id,name,email,created_at) VALUES (1,'用户一','one@example.com','2026-09-01T00:00:00Z'),(2,'用户二','two@example.com','2026-09-01T00:00:00Z');
+        INSERT INTO projects(id,name,owner_id,created_at) VALUES (1,'旧项目',1,'2026-09-01T00:00:00Z');
+        INSERT INTO agent_sessions(id,project_id,user_id,session_key,title,created_at,updated_at) VALUES (7,1,NULL,'shared','旧标题','2026-09-01T00:00:00Z','2026-09-01T00:00:00Z');
+        INSERT INTO agent_messages(id,session_id,role,content,created_at) VALUES (9,7,'user','旧消息','2026-09-01T00:00:00Z');
+        INSERT INTO agent_memory(project_id,session_id,role,content,created_at,user_id) VALUES
+            (1,'shared','user','用户一消息','2026-09-01T00:00:00Z',1),
+            (1,'shared','user','用户二消息','2026-09-01T00:00:01Z',2);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db.initialize(database)
+    db.initialize(database)
+
+    conn = sqlite3.connect(database)
+    conn.row_factory = sqlite3.Row
+    unique_indexes = []
+    for index in conn.execute("PRAGMA index_list(agent_sessions)").fetchall():
+        if index[2]:
+            columns = tuple(row[2] for row in conn.execute(f"PRAGMA index_info({index[1]})").fetchall())
+            unique_indexes.append(columns)
+    assert ("project_id", "user_id", "session_key") in unique_indexes
+    assert tuple(conn.execute("SELECT session_id,content FROM agent_messages WHERE id=9").fetchone()) == (7, "旧消息")
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    scoped = conn.execute(
+        "SELECT user_id,title FROM agent_sessions WHERE project_id=1 AND session_key='shared' ORDER BY user_id"
+    ).fetchall()
+    assert [(row["user_id"], row["title"]) for row in scoped] == [(None, "旧标题"), (1, "旧标题"), (2, "旧标题")]
+    conn.execute(
+        "INSERT INTO agent_sessions(project_id,user_id,session_key,title,created_at,updated_at) VALUES (1,1,'new','新','2026-09-01T00:00:00Z','2026-09-01T00:00:00Z')"
+    )
+    try:
+        conn.execute(
+            "INSERT INTO agent_sessions(project_id,user_id,session_key,title,created_at,updated_at) VALUES (1,1,'new','重复','2026-09-01T00:00:00Z','2026-09-01T00:00:00Z')"
+        )
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("用户范围内的 Agent session 唯一约束未生效")
+    conn.close()
+
+
+def test_sqlite_agent_session_migration_adds_missing_memory_user_column(tmp_path):
+    import sqlite3
+
+    database = tmp_path / "agent-memory-legacy.db"
+    conn = sqlite3.connect(database)
+    conn.executescript(
+        """
+        CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, skills TEXT NOT NULL DEFAULT '[]', max_concurrent_tasks INTEGER NOT NULL DEFAULT 3, status TEXT NOT NULL DEFAULT 'offline', created_at TEXT NOT NULL);
+        CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL, owner_id INTEGER, created_at TEXT NOT NULL);
+        CREATE TABLE agent_memory (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE agent_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, user_id INTEGER, session_key TEXT NOT NULL, title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,session_key));
+        INSERT INTO users(id,name,email,created_at) VALUES (1,'旧用户','legacy@example.com','2026-09-01T00:00:00Z');
+        INSERT INTO projects(id,name,owner_id,created_at) VALUES (1,'旧项目',1,'2026-09-01T00:00:00Z');
+        INSERT INTO agent_memory(project_id,session_id,role,content,created_at) VALUES (1,'legacy','user','旧消息','2026-09-01T00:00:00Z');
+        INSERT INTO agent_sessions(project_id,user_id,session_key,title,created_at,updated_at) VALUES (1,NULL,'legacy','旧标题','2026-09-01T00:00:00Z','2026-09-01T00:00:00Z');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db.initialize(database)
+
+    conn = sqlite3.connect(database)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_memory)").fetchall()}
+    assert "user_id" in columns
+    assert conn.execute("SELECT content,user_id FROM agent_memory").fetchone() == ("旧消息", None)
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.close()

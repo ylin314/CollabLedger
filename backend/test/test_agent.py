@@ -188,7 +188,9 @@ def test_agent_conversation_isolated_by_user_and_weekly_tool_is_read_only(tmp_pa
         assert client.post("/api/auth/register", json={"name": name, "email": email, "password": "password-123"}).status_code == 201
         assert client.post("/api/auth/login", json={"email": email, "password": "password-123"}).status_code == 200
     member_id = member_client.get("/api/auth/me").json()["id"]
+    owner_client.post("/api/projects", json={"name": "Agent 隔离前置项目"})
     pid = owner_client.post("/api/projects", json={"name": "Agent 隔离项目"}).json()["id"]
+    assert pid != 1  # 覆盖 project_id 与 user_id 不相等的真实参数绑定场景
     code = owner_client.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
     assert member_client.post(f"/api/invitations/{code}/accept").status_code == 200
     monkeypatch.setattr(api, "get_agent_runtime", lambda: AgentRuntime(db_path, AgentConfig(base_url="", api_key="", model="test")))
@@ -201,6 +203,14 @@ def test_agent_conversation_isolated_by_user_and_weekly_tool_is_read_only(tmp_pa
     assert member_chat.status_code == 200
     assert member_chat.json()["memory"][-1]["role"] == "assistant"
     assert all("对话组长" not in item.get("content", "") for item in member_chat.json()["memory"])
+    assert owner_client.patch(f"/api/projects/{pid}/agent/sessions/private", json={"title": "组长标题"}).status_code == 200
+    assert member_client.patch(f"/api/projects/{pid}/agent/sessions/private", json={"title": "成员标题"}).status_code == 200
+    owner_metadata = owner_client.get(f"/api/projects/{pid}/agent/sessions").json()["items"]
+    member_metadata = member_client.get(f"/api/projects/{pid}/agent/sessions").json()["items"]
+    assert owner_metadata[0]["title"] == "组长标题"
+    assert member_metadata[0]["title"] == "成员标题"
+    assert owner_client.get(f"/api/projects/{pid}/agent/sessions/private/messages").json()["items"]
+    assert member_client.get(f"/api/projects/{pid}/agent/sessions/private/messages").json()["items"]
     owner_sessions = owner_client.get(f"/api/projects/{pid}/agent/sessions").json()["items"]
     assert len(owner_sessions) == 1 and owner_sessions[0]["message_count"] >= 2
 

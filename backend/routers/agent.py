@@ -79,35 +79,38 @@ def agent_sessions(project_id: int, request: Request) -> dict[str, Any]:
     if not _has_agent_memory(conn):
         conn.close()
         return {"items": []}
+    user_clause = "user_id IS NULL" if user_id is None else "user_id=?"
+    user_args = () if user_id is None else (user_id,)
     rows = conn.execute(
-        """SELECT a.session_id,COUNT(*) message_count,MAX(a.created_at) updated_at,
+        f"""SELECT a.session_id,COUNT(*) message_count,MAX(a.created_at) updated_at,
         (SELECT content FROM agent_memory a2 WHERE a2.project_id=a.project_id
-          AND a2.session_id=a.session_id AND a2.user_id=? ORDER BY id DESC LIMIT 1) last_message,
-        s.title
-        FROM agent_memory a LEFT JOIN agent_sessions s
-          ON s.project_id=a.project_id AND s.session_key=a.session_id
-        WHERE a.project_id=? AND a.user_id=?
-        GROUP BY a.session_id,s.title ORDER BY updated_at DESC""",
-        (user_id, project_id, user_id),
+          AND a2.session_id=a.session_id AND {user_clause} ORDER BY id DESC LIMIT 1) last_message
+        FROM agent_memory a
+        WHERE a.project_id=? AND {user_clause}
+        GROUP BY a.session_id ORDER BY updated_at DESC""",
+        (*user_args, project_id, *user_args),
     ).fetchall()
-    known = {row["session_id"] for row in rows}
     metadata_rows = conn.execute(
-        "SELECT session_key session_id,title,created_at,updated_at "
-        "FROM agent_sessions WHERE project_id=? AND (user_id=? OR user_id IS NULL)",
-        (project_id, user_id),
+        f"SELECT session_key,title,created_at,updated_at FROM agent_sessions WHERE project_id=? AND {user_clause}",
+        (project_id, *user_args),
     ).fetchall()
     conn.close()
-    items = [dict(row) for row in rows]
+    metadata = {row["session_key"]: row for row in metadata_rows}
+    items = []
+    for row in rows:
+        item = dict(row)
+        meta = metadata.pop(item["session_id"], None)
+        item["title"] = meta["title"] if meta else None
+        items.append(item)
     items.extend(
         {
-            "session_id": row["session_id"],
+            "session_id": row["session_key"],
             "title": row["title"],
             "message_count": 0,
             "updated_at": row["updated_at"] or row["created_at"],
             "last_message": None,
         }
-        for row in metadata_rows
-        if row["session_id"] not in known
+        for row in metadata.values()
     )
     items.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
     return {"items": items}
@@ -128,10 +131,17 @@ def rename_agent_session(
         conn.close()
         fail(422, "VALIDATION_ERROR", "会话名称不能为空")
     stamp = now_iso()
-    session = conn.execute(
-        "SELECT id FROM agent_sessions WHERE project_id=? AND session_key=?",
-        (project_id, session_id),
-    ).fetchone()
+    user_id = user["id"] if user else None
+    if user_id is None:
+        session = conn.execute(
+            "SELECT id FROM agent_sessions WHERE project_id=? AND user_id IS NULL AND session_key=?",
+            (project_id, session_id),
+        ).fetchone()
+    else:
+        session = conn.execute(
+            "SELECT id FROM agent_sessions WHERE project_id=? AND user_id=? AND session_key=?",
+            (project_id, user_id, session_id),
+        ).fetchone()
     if session:
         conn.execute(
             "UPDATE agent_sessions SET title=?,updated_at=? WHERE id=?",
@@ -140,7 +150,7 @@ def rename_agent_session(
     else:
         conn.execute(
             "INSERT INTO agent_sessions(project_id,user_id,session_key,title,created_at,updated_at) VALUES (?,?,?,?,?,?)",
-            (project_id, user["id"] if user else None, session_id, title, stamp, stamp),
+            (project_id, user_id, session_id, title, stamp, stamp),
         )
     conn.commit()
     conn.close()
@@ -155,10 +165,12 @@ def agent_session_messages(project_id: int, session_id: str, request: Request) -
     if not _has_agent_memory(conn):
         conn.close()
         return {"session_id": session_id, "items": []}
+    user_clause = "user_id IS NULL" if user_id is None else "user_id=?"
+    user_args = () if user_id is None else (user_id,)
     rows = conn.execute(
-        "SELECT role,content,created_at FROM agent_memory "
-        "WHERE project_id=? AND session_id=? AND user_id=? ORDER BY id ASC",
-        (project_id, session_id, user_id),
+        f"SELECT role,content,created_at FROM agent_memory "
+        f"WHERE project_id=? AND session_id=? AND {user_clause} ORDER BY id ASC",
+        (project_id, session_id, *user_args),
     ).fetchall()
     conn.close()
     return {"session_id": session_id, "items": [dict(row) for row in rows]}
@@ -169,17 +181,22 @@ def clear_agent_session(project_id: int, session_id: str, request: Request) -> R
     conn = db(); _, user, _ = ensure_project_access(conn, project_id, request, "owner")
     user_id = user["id"] if user else None
     if _has_agent_memory(conn):
+        user_clause = "user_id IS NULL" if user_id is None else "user_id=?"
+        user_args = () if user_id is None else (user_id,)
         conn.execute(
-            "DELETE FROM agent_memory WHERE project_id=? AND session_id=? AND user_id=?",
-            (project_id, session_id, user_id),
+            f"DELETE FROM agent_memory WHERE project_id=? AND session_id=? AND {user_clause}",
+            (project_id, session_id, *user_args),
         )
-    # 只有会话已无任何用户消息时才删除共享元数据，避免影响其他人的私有记录。
-    remaining = conn.execute(
-        "SELECT 1 FROM agent_memory WHERE project_id=? AND session_id=? LIMIT 1",
-        (project_id, session_id),
-    ).fetchone()
-    if remaining is None:
-        conn.execute("DELETE FROM agent_sessions WHERE project_id=? AND session_key=?", (project_id, session_id))
+    if user_id is None:
+        conn.execute(
+            "DELETE FROM agent_sessions WHERE project_id=? AND user_id IS NULL AND session_key=?",
+            (project_id, session_id),
+        )
+    else:
+        conn.execute(
+            "DELETE FROM agent_sessions WHERE project_id=? AND user_id=? AND session_key=?",
+            (project_id, user_id, session_id),
+        )
     conn.commit()
     conn.close(); return Response(status_code=204)
 
