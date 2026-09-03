@@ -237,3 +237,38 @@ def test_d3_report_is_read_only_until_explicit_generation_and_separates_contribu
     assert "确认贡献：1 项" in markdown.text
     assert "待确认 2 项" in markdown.text
     assert "打卡工时：2.5" in markdown.text and "任务工时：7.0" in markdown.text
+
+
+def test_viewer_recommendation_preview_is_read_only_and_archived_weekly_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "permission-boundaries.db")
+    monkeypatch.setenv("RECOMMEND_SKILL_MODE", "rule")
+    monkeypatch.setenv("RECOMMEND_USE_LLM_SKILL", "false")
+    monkeypatch.setenv("RECOMMEND_USE_LLM_REASON", "false")
+    api.init_db()
+    owner, viewer = _client(), _client()
+    _account(owner, "边界组长", "boundary-owner@example.com")
+    _account(viewer, "只读成员", "boundary-viewer@example.com")
+    pid = owner.post("/api/projects", json={"name": "边界项目"}).json()["id"]
+    code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "viewer"}).json()["code"]
+    assert viewer.post(f"/api/invitations/{code}/accept").status_code == 200
+
+    conn = api.db()
+    before = tuple(conn.execute("SELECT (SELECT COUNT(*) FROM recommendations),(SELECT COUNT(*) FROM recommendation_events)").fetchone())
+    conn.close()
+    preview = viewer.get(f"/api/projects/{pid}/recommendations", params={"task_name": "只读预览任务", "task_type": "后端"})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["recommendation_id"] is None
+    conn = api.db()
+    assert tuple(conn.execute("SELECT (SELECT COUNT(*) FROM recommendations),(SELECT COUNT(*) FROM recommendation_events)").fetchone()) == before
+    conn.close()
+
+    assert owner.post(f"/api/projects/{pid}/archive").status_code == 200
+    archived_preview = owner.get(f"/api/projects/{pid}/recommendations", params={"task_name": "归档只读预览", "task_type": "后端"})
+    assert archived_preview.status_code == 200
+    assert archived_preview.json()["recommendation_id"] is None
+    conn = api.db()
+    assert tuple(conn.execute("SELECT (SELECT COUNT(*) FROM recommendations),(SELECT COUNT(*) FROM recommendation_events)").fetchone()) == before
+    conn.close()
+    archived = owner.post(f"/api/projects/{pid}/weekly-report")
+    assert archived.status_code == 409
+    assert archived.json()["error"]["code"] == "CONFLICT"

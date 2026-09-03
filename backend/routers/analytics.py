@@ -24,7 +24,7 @@ def get_recommendations(
     task_type: Optional[str] = None, estimated_hours: float = Query(default=1, ge=0), limit: int = Query(default=3, ge=1, le=20),
     include_owner: bool = False,
 ) -> dict[str, Any]:
-    conn = db(); _, user, _ = ensure_project_access(conn, project_id, request)
+    conn = db(); project, user, role = ensure_project_access(conn, project_id, request)
     if (task_id is None) == (not task_name): conn.close(); fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "task_id", "message": "task_id 与 task_name 必须且只能提供一个"}])
     description = ""
     if task_id is not None:
@@ -34,7 +34,10 @@ def get_recommendations(
         description = task["description"] or ""
     generated_by = user["id"] if user is not None else None
     conn.close()
-    return build_recommendation_payload(project_id, task_id, task_name or "", task_type, estimated_hours, limit, generated_by, include_owner=include_owner, description=description)
+    return build_recommendation_payload(
+        project_id, task_id, task_name or "", task_type, estimated_hours, limit, generated_by,
+        include_owner=include_owner, description=description, persist=role != "viewer" and project["status"] != "archived",
+    )
 
 
 @router.post("/api/projects/{project_id}/recommendations/batch")
@@ -96,7 +99,7 @@ def generate_weekly_report_route(
     format: Literal["json", "markdown"] = "json",
 ) -> Any:
     """周报页面明确点击生成/刷新后调用的写接口。"""
-    conn = db(); _, user, _ = ensure_project_access(conn, project_id, request, "member"); conn.close()
+    conn = db(); project, user, _ = ensure_project_access(conn, project_id, request, "member"); ensure_writable(project); conn.close()
     if week_start is None and (start_date is not None or end_date is not None):
         start, _ = _week_bounds(start_date, end_date)
         week_start = start

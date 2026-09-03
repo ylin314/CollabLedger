@@ -576,6 +576,7 @@ def build_recommendation_payload(
     include_owner: bool = False,
     description: str = "",
     mode: str = "single",
+    persist: bool = True,
 ) -> dict[str, Any]:
     task = {"task_id": task_id, "task_name": task_name, "title": task_name, "task_type": task_type, "estimated_hours": estimated_hours, "description": description}
     scored = _score_candidates(project_id, task, limit, include_owner)
@@ -597,7 +598,10 @@ def build_recommendation_payload(
         "errors": {key: scored[key] for key in ("skill_error", "reason_error") if scored.get(key)},
         "config": scored["config"],
     }
-    payload["recommendation_id"] = persist_recommendation_record(project_id, task_id, task_name, generated_by, payload, mode=mode)
+    if persist:
+        payload["recommendation_id"] = persist_recommendation_record(project_id, task_id, task_name, generated_by, payload, mode=mode)
+    else:
+        payload["recommendation_id"] = None
     return payload
 
 
