@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+from backend.core.context import active_db_path
+from backend.db import connect
 
 
 class AgentTools:
@@ -8,6 +12,9 @@ class AgentTools:
 
     HTTP 路由负责认证；进入 Agent 后只使用显式内部只读 helper，避免绕过路由或伪造 Request。
     """
+
+    def __init__(self, db_path: str | Path | None = None):
+        self.db_path = Path(db_path) if db_path is not None else active_db_path()
 
     def snapshot(self, project_id: int) -> dict[str, Any]:
         from backend.services.analytics import internal_project_snapshot
@@ -83,8 +90,6 @@ class AgentTools:
         """按平台来源和时间范围聚合真实贡献记录，保留状态分布且不执行任何写操作。"""
         from datetime import date, timedelta
 
-        from backend.db import connect
-
         allowed_sources = {"github", "feishu", "tencent_doc", "manual"}
         if source and source not in allowed_sources:
             raise ValueError("不支持的平台来源")
@@ -100,7 +105,7 @@ class AgentTools:
         if start_date and end_date and start_date > end_date:
             raise ValueError("开始日期不能晚于结束日期")
 
-        conn = connect()
+        conn = connect(self.db_path)
         try:
             where = ["c.project_id=?", "c.deleted_at IS NULL"]
             params: list[Any] = [project_id]

@@ -29,7 +29,7 @@ class AgentRuntime:
         self.config = config or AgentConfig.from_env()
         self.memory = AgentMemory(db_path)
         self.planner = AgentPlanner()
-        self.tools = AgentTools()
+        self.tools = AgentTools(db_path)
         self.llm = LLMClient(self.config)
 
     def _tool_args(self, message: str, facts: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -58,9 +58,10 @@ class AgentRuntime:
             safe = _safe_runtime_error(exc, self.config.api_key)
             return {"tool": tool_name, "error": safe}, safe
 
-    def _fallback(self, message: str, facts: dict[str, Any]) -> str:
+    def _fallback(self, message: str, facts: dict[str, Any], failed_tools: set[str] | None = None) -> str:
         """LLM 不可用时的规则兜底；只引用已读取事实并明确标注降级。"""
         text = message.lower()
+        failed_tools = failed_tools or set()
         asks_weekly = any(token in text for token in ("周报", "总结", "summary"))
         asks_risk = any(token in text for token in ("风险", "延期", "risk"))
         asks_load = any(token in text for token in ("负载", "负荷", "健康", "load"))
@@ -85,7 +86,9 @@ class AgentRuntime:
             )
 
         if asks_weekly:
-            if weekly.get("exists"):
+            if "weekly_report" in failed_tools:
+                sections.append("**周报状态**：周报数据读取失败，当前无法确认本周期是否已生成，请稍后重试。")
+            elif weekly.get("exists"):
                 ws = weekly.get("summary") or {}
                 sections.append(
                     "**本周周报**：共 {t} 项任务，已完成 {d} 项，延期 {o} 项，确认贡献 {c} 项，{pending}。".format(
@@ -109,7 +112,9 @@ class AgentRuntime:
             )
 
         if asks_risk or (not asks_weekly and not task_detail.get("found") and not recommendation and not platform):
-            if risks:
+            if "risk_detail" in failed_tools:
+                sections.append("**风险**：风险数据读取失败，当前不能据此判断项目是否暂无风险。")
+            elif risks:
                 first = risks[0]
                 focus = first.get("message") or first.get("title") or "请查看风险列表"
                 sections.append("**优先风险**：当前共 {n} 项风险，优先关注：{focus}。".format(n=len(risks), focus=focus))
@@ -125,17 +130,24 @@ class AgentRuntime:
                     note=top.get("reasons", {}).get("summary", ""),
                 )
             )
+        elif "recommend" in failed_tools:
+            sections.append("**候选建议**：负责人推荐读取失败，当前无法给出可靠候选人，请稍后重试。")
 
         high = [item.get("name") for item in load if item.get("weighted_level", item.get("load_level")) == "high"]
         if asks_load or high:
-            sections.append(
-                "**负载提醒**：{message}".format(
-                    message=("高负载成员为 " + "、".join(high) + "，超负载成员不会进入推荐名单。")
-                    if high else "当前没有成员处于高负载。"
+            if "member_load" in failed_tools:
+                sections.append("**负载提醒**：负载数据读取失败，当前不能判断成员是否处于高负载。")
+            else:
+                sections.append(
+                    "**负载提醒**：{message}".format(
+                        message=("高负载成员为 " + "、".join(high) + "，超负载成员不会进入推荐名单。")
+                        if high else "当前没有成员处于高负载。"
+                    )
                 )
-            )
 
-        if platform:
+        if "platform_activity" in failed_tools:
+            sections.append("**平台活动**：平台活动数据读取失败，当前无法判断外部平台是否有已同步贡献。")
+        elif platform:
             total = int(platform.get("total") or 0)
             integrations = platform.get("integrations") or []
             if total:
@@ -293,7 +305,7 @@ class AgentRuntime:
             if action == "answer":
                 text = message.lower()
                 required_tool: tuple[str, str, dict[str, Any]] | None = None
-                called_tools = {str(item.get("tool") or "") for item in tool_trace}
+                called_tools = {str(item.get("tool") or "") for item in tool_trace if item.get("ok")}
                 is_platform_question = any(token in text for token in ("github", "飞书", "feishu", "腾讯文档", "tencent_doc", "平台活动", "webhook"))
                 is_weekly_question = "周报" in text or (("总结" in text or "summary" in text) and ("这周" in text or "本周" in text))
                 if is_platform_question and "platform_activity" not in called_tools:
@@ -369,20 +381,21 @@ class AgentRuntime:
         if answer is None:
             text = message.lower()
             rescue_plan: list[tuple[str, str, dict[str, Any]]] = []
-            called_tools = {str(item.get("tool") or "") for item in tool_trace}
+            called_tools = {str(item.get("tool") or "") for item in tool_trace if item.get("ok")}
+            attempted_tools = {str(item.get("tool") or "") for item in tool_trace}
             is_platform_question = any(token in text for token in ("github", "飞书", "feishu", "腾讯文档", "tencent_doc", "平台活动", "webhook"))
             is_weekly_question = "周报" in text or (("总结" in text or "summary" in text) and ("这周" in text or "本周" in text))
             is_recommendation_question = any(token in text for token in ("推荐", "分配", "负责人", "谁适合", "应该给谁", "给谁"))
             recommendation_args = self._tool_args(message, facts) if is_recommendation_question else {}
-            if any(token in text for token in ("风险", "延期", "risk")) and "risk_detail" not in called_tools:
+            if any(token in text for token in ("风险", "延期", "risk")) and "risk_detail" not in called_tools and "risk_detail" not in attempted_tools:
                 rescue_plan.append(("risk_detail", "risks", {}))
-            if is_weekly_question and "weekly_report" not in called_tools:
+            if is_weekly_question and "weekly_report" not in called_tools and "weekly_report" not in attempted_tools:
                 rescue_plan.append(("weekly_report", "weekly_report", {}))
-            if any(token in text for token in ("负载", "负荷", "健康", "load")) and "member_load" not in called_tools:
+            if any(token in text for token in ("负载", "负荷", "健康", "load")) and "member_load" not in called_tools and "member_load" not in attempted_tools:
                 rescue_plan.append(("member_load", "load", {}))
-            if is_recommendation_question and recommendation_args.get("task_name") and "recommend" not in called_tools:
+            if is_recommendation_question and recommendation_args.get("task_name") and "recommend" not in called_tools and "recommend" not in attempted_tools:
                 rescue_plan.append(("recommend", "recommendation", recommendation_args))
-            if is_platform_question and "platform_activity" not in called_tools:
+            if is_platform_question and "platform_activity" not in called_tools and "platform_activity" not in attempted_tools:
                 source_hint = None
                 if "github" in text:
                     source_hint = "github"
@@ -402,7 +415,8 @@ class AgentRuntime:
             if is_recommendation_question and not recommendation_args.get("task_name"):
                 answer = "你想为哪一个任务推荐负责人？请告诉我任务名称，或者先在任务看板里选中任务。"
             else:
-                answer = self._fallback(message, facts)
+                failed_tools = {str(item.get("tool") or "") for item in tool_trace if not item.get("ok")}
+                answer = self._fallback(message, facts, failed_tools=failed_tools)
             source = "fallback"
         self.memory.append(project_id, "assistant", answer, session_id, user_id=user_id)
         try:

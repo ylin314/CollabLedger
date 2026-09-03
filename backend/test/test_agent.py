@@ -321,6 +321,57 @@ def test_agent_answer_fact_gate_requires_weekly_tool(tmp_path):
     assert result["facts"]["weekly_report"]["exists"] is False
 
 
+def test_agent_failed_weekly_tool_cannot_satisfy_fact_gate(tmp_path):
+    runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="test"))
+    decisions = iter(
+        [
+            {"action": "tool", "tool": "weekly_report", "args": {}},
+            {"action": "answer", "answer": "无周报事实也直接回答"},
+        ]
+    )
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: json.dumps(next(decisions), ensure_ascii=False)
+
+    def fake_run(project_id, name, arguments=None):
+        if name == "weekly_report":
+            raise RuntimeError("周报读取失败")
+        return {"project": {"name": "测试"}, "tasks": [], "members": [], "report": {"overall": {}}, "risks": {"risks": []}}
+
+    runtime.tools.run = fake_run
+    result = runtime.run(1, "帮我总结本周工作")
+
+    assert result["source"] == "fallback"
+    assert result["answer"] != "无周报事实也直接回答"
+    assert "读取失败" in result["answer"]
+    assert [item["tool"] for item in result["tool_trace"]].count("weekly_report") == 2
+    assert all(item["ok"] is False for item in result["tool_trace"] if item["tool"] == "weekly_report")
+
+
+def test_platform_activity_uses_runtime_db_path_when_cwd_differs(tmp_path, monkeypatch):
+    from backend.agent.tools import AgentTools
+
+    configured = tmp_path / "configured.db"
+    other_cwd = tmp_path / "other-cwd"
+    other_cwd.mkdir()
+    monkeypatch.setattr(api, "DB_PATH", configured)
+    monkeypatch.delenv("COLLAB_DB", raising=False)
+    api.init_db()
+    user = api.create_user(api.UserIn(name="配置库成员", email="configured@example.com"))
+    project = api.create_project(api.ProjectIn(name="配置项目", owner_id=user["id"]))
+    conn = api.db()
+    conn.execute(
+        "INSERT INTO contributions(project_id,user_id,kind,title,quantity,metadata,source,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (project["id"], user["id"], "code", "配置库贡献", 1, "{}", "github", "confirmed", "2026-09-03T00:00:00Z"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.chdir(other_cwd)
+
+    result = AgentTools(configured).platform_activity(project["id"])
+
+    assert result["total"] == 1
+    assert result["by_source"] == {"github": 1}
+
+
 def test_agent_recommendation_fallback_uses_dedicated_tool(tmp_path):
     runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="test"))
     runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: (_ for _ in ()).throw(RuntimeError("LLM 超时"))
