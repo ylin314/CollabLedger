@@ -282,30 +282,44 @@ def test_left_member_is_excluded_from_current_load_reports_weekly_and_recommenda
     monkeypatch.setenv("RECOMMEND_USE_LLM_REASON", "false")
     api.init_db()
     owner, member = _client(), _client()
-    _account(owner, "现任组长", "left-boundary-owner@example.com")
+    owner_user = _account(owner, "现任组长", "left-boundary-owner@example.com")
     member_user = _account(member, "已退出成员", "left-boundary-member@example.com")
     pid = owner.post("/api/projects", json={"name": "退出成员边界项目"}).json()["id"]
     code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
     assert member.post(f"/api/invitations/{code}/accept").status_code == 200
-    task = owner.post(f"/api/projects/{pid}/tasks", json={"title": "退出成员旧任务", "assignee_id": member_user["id"], "task_type": "后端"}).json()
+    task = owner.post(f"/api/projects/{pid}/tasks", json={"title": "退出成员旧任务", "assignee_id": member_user["id"], "reviewer_id": member_user["id"], "task_type": "后端"}).json()
     assert member.post(f"/api/tasks/{task['id']}/checkins", json={"content": "退出前真实打卡", "hours": 2.5}).status_code == 201
     contribution = member.post(f"/api/projects/{pid}/contributions", json={"kind": "code", "title": "退出前真实贡献", "quantity": 1}).json()
+    completed_task = owner.post(f"/api/projects/{pid}/tasks", json={"title": "退出成员已完成历史任务", "assignee_id": member_user["id"], "reviewer_id": member_user["id"], "task_type": "后端"}).json()
+    assert member.post(f"/api/tasks/{completed_task['id']}/start", json={}).status_code == 200
+    assert member.post(f"/api/tasks/{completed_task['id']}/complete", json={"actual_hours": 1}).status_code == 200
+    unfinished_task = owner.post(f"/api/projects/{pid}/tasks", json={"title": "退出成员未完成历史任务", "assignee_id": member_user["id"], "reviewer_id": member_user["id"], "task_type": "后端"}).json()
+    assert member.post(f"/api/tasks/{unfinished_task['id']}/unfinished", json={}).status_code == 200
     owner.post(f"/api/projects/{pid}/tasks", json={"title": "退出后待分配任务", "task_type": "后端"})
     assert owner.delete(f"/api/projects/{pid}/members/{member_user['id']}").status_code == 204
 
     load = owner.get(f"/api/projects/{pid}/members/load").json()
     assert member_user["id"] not in {item["user_id"] for item in load["members"]}
 
+    listed_tasks = owner.get(f"/api/projects/{pid}/tasks").json()["items"]
+    orphan = next(item for item in listed_tasks if item["id"] == task["id"])
+    assert orphan["assignee_id"] is None
+    assert orphan["status"] == "unassigned"
+    assert orphan["reviewer_id"] is None
+    assert orphan["participant_ids"] == []
+    risks = owner.get(f"/api/projects/{pid}/risks").json()["risks"]
+    assert any(item["task_id"] == task["id"] and item["type"] == "unassigned_task" for item in risks)
+
     snapshot = analytics.internal_project_snapshot(pid)
     assert member_user["id"] not in {item["user_id"] for item in snapshot["members"]}
 
     report = owner.get(f"/api/projects/{pid}/report").json()
     assert member_user["id"] not in {item["user_id"] for item in report["members"]}
-    assert report["overall"]["tasks_total"] == 1
+    assert report["overall"]["tasks_total"] == 2
 
     weekly = owner.post(f"/api/projects/{pid}/weekly-report").json()
     assert member_user["id"] not in {item["user_id"] for item in weekly["members"]}
-    assert weekly["summary"]["tasks_total"] == 1
+    assert weekly["summary"]["tasks_total"] == 2
     assert weekly["summary"]["checkin_count"] == 0
     assert weekly["summary"]["checkin_hours"] == 0
     assert weekly["summary"]["contribution_count"] == 0
@@ -314,11 +328,21 @@ def test_left_member_is_excluded_from_current_load_reports_weekly_and_recommenda
     recommendation = owner.get(f"/api/projects/{pid}/recommendations", params={"task_name": "退出后待分配任务", "task_type": "后端"}).json()
     assert member_user["id"] not in {item["user_id"] for item in recommendation["recommendations"]}
     assert member_user["id"] not in {item["user_id"] for item in recommendation["excluded"]}
+    reassigned = owner.post(f"/api/tasks/{task['id']}/assign", json={"assignee_id": owner_user["id"], "note": "退出成员任务重新处置"})
+    assert reassigned.status_code == 200 and reassigned.json()["assignee_id"] == owner_user["id"]
 
     conn = api.db()
     assert conn.execute("SELECT status FROM memberships WHERE project_id=? AND user_id=?", (pid, member_user["id"])).fetchone()[0] == "left"
-    saved_task = conn.execute("SELECT id,assignee_id,deleted_at FROM tasks WHERE id=?", (task["id"],)).fetchone()
-    assert saved_task["assignee_id"] == member_user["id"] and saved_task["deleted_at"] is None
+    saved_task = conn.execute("SELECT id,assignee_id,status,reviewer_id,deleted_at FROM tasks WHERE id=?", (task["id"],)).fetchone()
+    assert saved_task["assignee_id"] == owner_user["id"] and saved_task["status"] == "assigned" and saved_task["reviewer_id"] is None and saved_task["deleted_at"] is None
+    completed_saved = conn.execute("SELECT assignee_id,status,reviewer_id FROM tasks WHERE id=?", (completed_task["id"],)).fetchone()
+    unfinished_saved = conn.execute("SELECT assignee_id,status,reviewer_id FROM tasks WHERE id=?", (unfinished_task["id"],)).fetchone()
+    assert completed_saved["assignee_id"] == member_user["id"] and completed_saved["status"] == "completed" and completed_saved["reviewer_id"] == member_user["id"]
+    assert unfinished_saved["assignee_id"] == member_user["id"] and unfinished_saved["status"] == "unfinished" and unfinished_saved["reviewer_id"] == member_user["id"]
     assert conn.execute("SELECT COUNT(*) FROM task_checkins WHERE task_id=?", (task["id"],)).fetchone()[0] == 1
     assert conn.execute("SELECT status FROM contributions WHERE id=?", (contribution["id"],)).fetchone()[0] == "pending"
+    participant = conn.execute("SELECT status,left_at FROM task_participants WHERE task_id=? AND user_id=?", (task["id"], member_user["id"])).fetchone()
+    assert participant["status"] == "left" and participant["left_at"]
+    removal_log = conn.execute("SELECT action,from_status,to_status,note FROM task_logs WHERE task_id=? AND action='member_removed'", (task["id"],)).fetchone()
+    assert removal_log["from_status"] == "assigned" and removal_log["to_status"] == "unassigned" and str(member_user["id"]) in removal_log["note"]
     conn.close()

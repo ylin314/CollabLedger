@@ -203,7 +203,42 @@ def remove_member(project_id: int, user_id: int, request: Request) -> Response:
             conn.close(); fail(403, "FORBIDDEN", "只有主 owner 可以移除其他 owner")
         count = conn.execute("SELECT COUNT(*) n FROM memberships WHERE project_id=? AND role='owner' AND status='active'", (project_id,)).fetchone()["n"]
         if count <= 1: conn.close(); fail(409, "CONFLICT", "项目必须至少保留一个 owner")
-    stamp = now_iso(); conn.execute("UPDATE memberships SET status='left',left_at=?,updated_at=? WHERE project_id=? AND user_id=? AND status='active'", (stamp, stamp, project_id, user_id))
+    stamp = now_iso()
+    affected_tasks = conn.execute(
+        "SELECT id,status FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL "
+        "AND status IN ('assigned','in_progress','paused','overdue')",
+        (project_id, user_id),
+    ).fetchall()
+    for task in affected_tasks:
+        next_status = "unassigned" if task["status"] in {"assigned", "in_progress", "paused", "overdue"} else task["status"]
+        conn.execute(
+            "UPDATE tasks SET assignee_id=NULL,status=?,updated_at=? WHERE id=?",
+            (next_status, stamp, task["id"]),
+        )
+        conn.execute(
+            "INSERT INTO task_logs(task_id,user_id,action,from_status,to_status,note,at) VALUES (?,?,?,?,?,?,?)",
+            (
+                task["id"],
+                user["id"] if user is not None else None,
+                "member_removed",
+                task["status"],
+                next_status,
+                f"成员 user_id={user_id} 退出项目，任务负责人已回收；原负责人信息保留在本日志中",
+                stamp,
+            ),
+        )
+    conn.execute(
+        "UPDATE tasks SET reviewer_id=NULL,updated_at=? WHERE project_id=? AND reviewer_id=? "
+        "AND deleted_at IS NULL AND status NOT IN ('completed','unfinished')",
+        (stamp, project_id, user_id),
+    )
+    conn.execute(
+        "UPDATE task_participants SET status='left',left_at=?,updated_at=? "
+        "WHERE user_id=? AND status='active' AND task_id IN "
+        "(SELECT id FROM tasks WHERE project_id=? AND deleted_at IS NULL)",
+        (stamp, stamp, user_id, project_id),
+    )
+    conn.execute("UPDATE memberships SET status='left',left_at=?,updated_at=? WHERE project_id=? AND user_id=? AND status='active'", (stamp, stamp, project_id, user_id))
     if project["owner_id"] == user_id:
         replacement = conn.execute("SELECT user_id FROM memberships WHERE project_id=? AND role='owner' AND status='active' ORDER BY joined_at LIMIT 1", (project_id,)).fetchone()
         if replacement:
