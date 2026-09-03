@@ -405,3 +405,41 @@ def test_d2_recommendation_excludes_weighted_high_member(tmp_path, monkeypatch):
     excluded = next(item for item in recommendation["excluded"] if item["user_id"] == member_user["id"])
     assert excluded["reason_code"] == "overloaded"
     assert excluded["weighted_level"] == "high"
+
+
+
+def test_d3_weekly_completed_uses_completion_log_not_review_updated_at(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "d3-completion-time.db")
+    monkeypatch.setenv("LLM_API_KEY", "")
+    api.init_db()
+    owner, member = _client(), _client()
+    _account(owner, "完成时间组长", "d3-completion-owner@example.com")
+    member_user = _account(member, "完成时间成员", "d3-completion-member@example.com")
+    pid = owner.post("/api/projects", json={"name": "完成时间项目"}).json()["id"]
+    code = owner.post(f"/api/projects/{pid}/invitations", json={"role": "member"}).json()["code"]
+    assert member.post(f"/api/invitations/{code}/accept").status_code == 200
+    task = owner.post(
+        f"/api/projects/{pid}/tasks",
+        json={"title": "上周完成本周评价", "assignee_id": member_user["id"], "estimated_hours": 7},
+    ).json()
+    conn = api.db()
+    conn.execute(
+        "UPDATE tasks SET status='completed',actual_hours=?,updated_at=? WHERE id=?",
+        (7, "2026-09-03T12:00:00Z", task["id"]),
+    )
+    conn.execute(
+        "UPDATE task_logs SET to_status='completed',at=? WHERE task_id=? AND action='created'",
+        ("2026-08-27T12:00:00Z", task["id"]),
+    )
+    conn.commit()
+    conn.close()
+    reviewed = owner.post(f"/api/tasks/{task['id']}/review", json={"quality": 4.5, "comment": "本周评价"})
+    assert reviewed.status_code in (200, 201), reviewed.text
+
+    weekly = owner.post(f"/api/projects/{pid}/weekly-report", params={"week_start": "2026-08-31"})
+    assert weekly.status_code == 200, weekly.text
+    data = weekly.json()
+    assert data["summary"]["tasks_completed"] == 0
+    member_data = next(item for item in data["members"] if item["user_id"] == member_user["id"])
+    assert member_data["completed_tasks"] == 0
+    assert member_data["task_hours"] == 0

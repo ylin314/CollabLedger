@@ -188,6 +188,7 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
     conn = db(); project = ensure_project(conn, project_id)
     start_s, end_s = start.isoformat(), end.isoformat()
     date_expr = "COALESCE(substr(occurred_at,1,10),substr(created_at,1,10))"
+    completion_date_expr = "COALESCE((SELECT substr(MIN(l.at),1,10) FROM task_logs l WHERE l.task_id=tasks.id AND l.to_status='completed'), CASE WHEN tasks.status='completed' THEN substr(tasks.created_at,1,10) END)"
     active_task_scope = "(assignee_id IS NULL OR EXISTS (SELECT 1 FROM memberships active_members WHERE active_members.project_id=tasks.project_id AND active_members.user_id=tasks.assignee_id AND active_members.status='active'))"
     active_checkin_scope = "EXISTS (SELECT 1 FROM memberships active_members WHERE active_members.project_id=task_checkins.project_id AND active_members.user_id=task_checkins.user_id AND active_members.status='active')"
     active_contribution_scope = "EXISTS (SELECT 1 FROM memberships active_members WHERE active_members.project_id=contributions.project_id AND active_members.user_id=contributions.user_id AND active_members.status='active')"
@@ -197,7 +198,7 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
     ).fetchone()["n"]
     completed = conn.execute(
         f"SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND {active_task_scope} "
-        "AND status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ?",
+        f"AND status='completed' AND {completion_date_expr} BETWEEN ? AND ?",
         (project_id, start_s, end_s),
     ).fetchone()["n"]
     in_progress = conn.execute(
@@ -224,14 +225,14 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
     ).fetchone()
     task_hours_all = conn.execute(
         f"SELECT COALESCE(SUM(actual_hours),0) hours FROM tasks WHERE project_id=? "
-        f"AND deleted_at IS NULL AND {active_task_scope} AND substr(updated_at,1,10) BETWEEN ? AND ?",
+        f"AND deleted_at IS NULL AND {active_task_scope} AND status='completed' AND {completion_date_expr} BETWEEN ? AND ?",
         (project_id, start_s, end_s),
     ).fetchone()["hours"] or 0
     highlights = [
         row["title"] for row in conn.execute(
             f"SELECT title FROM tasks WHERE project_id=? AND deleted_at IS NULL AND {active_task_scope} "
-            "AND status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ? "
-            "ORDER BY updated_at DESC LIMIT 5",
+            f"AND status='completed' AND {completion_date_expr} BETWEEN ? AND ? "
+            f"ORDER BY {completion_date_expr} DESC LIMIT 5",
             (project_id, start_s, end_s),
         ).fetchall()
     ]
@@ -244,9 +245,9 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
     for member in member_rows:
         ms = conn.execute(
             "SELECT "
-            "SUM(CASE WHEN status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ? THEN 1 ELSE 0 END) completed_tasks,"
+            f"SUM(CASE WHEN status='completed' AND {completion_date_expr} BETWEEN ? AND ? THEN 1 ELSE 0 END) completed_tasks,"
             "SUM(CASE WHEN status IN ('assigned','in_progress','paused','overdue') THEN 1 ELSE 0 END) active_tasks,"
-            "COALESCE(SUM(CASE WHEN substr(updated_at,1,10) BETWEEN ? AND ? THEN actual_hours ELSE 0 END),0) task_hours "
+            f"COALESCE(SUM(CASE WHEN status='completed' AND {completion_date_expr} BETWEEN ? AND ? THEN actual_hours ELSE 0 END),0) task_hours "
             "FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL",
             (start_s, end_s, start_s, end_s, project_id, member["id"]),
         ).fetchone()
