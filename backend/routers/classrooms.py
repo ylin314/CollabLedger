@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 
 from backend.core.context import db, fail, now_iso, require_user
 from backend.schemas import ClassroomIn, ClassroomMemberIn, ClassroomRoleUpdate
@@ -57,22 +57,123 @@ def remove_classroom_member(classroom_id: int, user_id: int, request: Request) -
 __all__ = ["router"]
 
 @router.get("/api/users/profile/{user_id}/history")
-def collaboration_history(user_id: int, request: Request) -> dict[str, Any]:
-    conn = db(); user = require_user(conn, request); uid = user["id"]
+def collaboration_history(
+    user_id: int,
+    request: Request,
+    project_type: str | None = Query(default=None),
+    year: int | None = Query(default=None, ge=1900, le=2200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    conn = db()
+    current = require_user(conn, request)
+    uid = current["id"]
+    if user_id == 0:
+        user_id = uid
     if user_id != uid:
-        shared = conn.execute("SELECT 1 FROM classroom_memberships mine JOIN classroom_memberships theirs ON theirs.classroom_id=mine.classroom_id WHERE mine.user_id=? AND mine.status='active' AND theirs.user_id=? AND theirs.status='active' LIMIT 1", (uid, user_id)).fetchone()
+        shared = conn.execute(
+            "SELECT 1 FROM classroom_memberships mine JOIN classroom_memberships theirs ON theirs.classroom_id=mine.classroom_id WHERE mine.user_id=? AND mine.status='active' AND theirs.user_id=? AND theirs.status='active' LIMIT 1",
+            (uid, user_id),
+        ).fetchone()
         if not shared:
-            conn.close(); fail(403, "FORBIDDEN", "只能查看同班成员的协作履历")
+            conn.close()
+            fail(403, "FORBIDDEN", "只能查看同班成员的协作履历")
     target = conn.execute("SELECT id,name,email FROM users WHERE id=?", (user_id,)).fetchone()
     if not target:
-        conn.close(); fail(404, "NOT_FOUND", "用户不存在")
-    projects = conn.execute("SELECT p.id,p.name,p.status,p.classroom_id,m.role,m.joined_at,m.left_at FROM projects p JOIN memberships m ON m.project_id=p.id WHERE m.user_id=? ORDER BY p.updated_at DESC,p.id DESC", (user_id,)).fetchall()
-    tasks = conn.execute("SELECT t.id,t.project_id,t.title,t.status,t.assignee_id,t.created_at,t.updated_at,p.name project_name FROM tasks t JOIN projects p ON p.id=t.project_id LEFT JOIN task_participants tp ON tp.task_id=t.id AND tp.user_id=? AND tp.status='active' WHERE t.deleted_at IS NULL AND (t.assignee_id=? OR tp.user_id IS NOT NULL) ORDER BY t.updated_at DESC LIMIT 100", (user_id, user_id)).fetchall()
-    contributions = conn.execute("SELECT c.id,c.project_id,c.title,c.kind,c.quantity,c.occurred_at,c.created_at,p.name project_name FROM contributions c JOIN projects p ON p.id=c.project_id WHERE c.user_id=? AND c.deleted_at IS NULL ORDER BY c.created_at DESC LIMIT 100", (user_id,)).fetchall()
-    conn.close(); return {"user": dict(target), "projects": [dict(row) for row in projects], "tasks": [dict(row) for row in tasks], "contributions": [dict(row) for row in contributions]}
+        conn.close()
+        fail(404, "NOT_FOUND", "用户不存在")
+
+    from backend.services.profile_authorization import profile_source_project_ids
+
+    source_project_ids = profile_source_project_ids(conn, user_id, self_view=user_id == uid)
+    marks = ",".join("?" for _ in source_project_ids) or "NULL"
+    args: list[Any] = [user_id, *source_project_ids]
+    filters = [f"p.id IN ({marks})", "p.deleted_at IS NULL"]
+    if project_type:
+        filters.append("p.project_type=?")
+        args.append(project_type.strip())
+    if year is not None:
+        year_start = f"{year:04d}-01-01"
+        year_end = f"{year:04d}-12-31"
+        filters.append("(COALESCE(p.start_date,substr(p.created_at,1,10))<=? AND (p.end_date IS NULL OR p.end_date>=?))")
+        args.extend([year_end, year_start])
+    where_sql = " AND ".join(filters)
+    count = conn.execute(
+        f"SELECT COUNT(*) n FROM memberships m JOIN projects p ON p.id=m.project_id WHERE m.user_id=? AND {where_sql}",
+        args,
+    ).fetchone()["n"]
+    offset = (page - 1) * page_size
+    project_rows = conn.execute(
+        f"""SELECT p.id project_id,p.name,p.project_type,p.status,m.role,p.start_date,p.end_date,
+                   SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) tasks_completed,
+                   AVG(CASE WHEN t.status='completed' THEN COALESCE(r.quality,t.quality) END) average_quality
+            FROM memberships m JOIN projects p ON p.id=m.project_id
+            LEFT JOIN tasks t ON t.project_id=p.id AND t.deleted_at IS NULL
+              AND (t.assignee_id=? OR EXISTS (
+                    SELECT 1 FROM task_participants tp
+                    WHERE tp.task_id=t.id AND tp.user_id=? AND tp.status IN ('active','left')
+              ))
+            LEFT JOIN task_reviews r ON r.task_id=t.id
+            WHERE m.user_id=? AND {where_sql}
+            GROUP BY p.id,p.name,p.project_type,p.status,m.role,p.start_date,p.end_date
+            ORDER BY COALESCE(p.end_date,p.updated_at,p.created_at) DESC,p.id DESC
+            LIMIT ? OFFSET ?""",
+        [user_id, user_id, *args, page_size, offset],
+    ).fetchall()
+    page_project_ids = [int(row["project_id"]) for row in project_rows]
+    page_marks = ",".join("?" for _ in page_project_ids) or "NULL"
+    tasks = conn.execute(
+        f"""SELECT t.id,t.project_id,t.title,t.status,t.assignee_id,t.created_at,t.updated_at,p.name project_name
+            FROM tasks t JOIN projects p ON p.id=t.project_id
+            WHERE t.deleted_at IS NULL AND p.deleted_at IS NULL AND p.id IN ({page_marks})
+              AND (t.assignee_id=? OR EXISTS (
+                    SELECT 1 FROM task_participants tp
+                    WHERE tp.task_id=t.id AND tp.user_id=? AND tp.status IN ('active','left')
+              ))
+            ORDER BY t.updated_at DESC,t.id DESC LIMIT 100""",
+        [*page_project_ids, user_id, user_id],
+    ).fetchall()
+    contributions = conn.execute(
+        f"""SELECT c.id,c.project_id,c.title,c.kind,c.quantity,c.status,c.occurred_at,c.created_at,p.name project_name
+            FROM contributions c JOIN projects p ON p.id=c.project_id
+            WHERE c.user_id=? AND c.deleted_at IS NULL AND p.deleted_at IS NULL AND p.id IN ({page_marks})
+            ORDER BY c.created_at DESC LIMIT 100""",
+        [user_id, *page_project_ids],
+    ).fetchall()
+    conn.close()
+    items = []
+    for row in project_rows:
+        item = dict(row)
+        if item.get("average_quality") is not None:
+            item["average_quality"] = round(float(item["average_quality"]), 2)
+        item["tasks_completed"] = int(item.get("tasks_completed") or 0)
+        items.append(item)
+    return {
+        "user": dict(target),
+        "items": items,
+        "total": int(count or 0),
+        "page": page,
+        "page_size": page_size,
+        "projects": items,
+        "tasks": [dict(row) for row in tasks],
+        "contributions": [dict(row) for row in contributions],
+    }
 
 
 @router.get("/api/users/me/history")
-def my_collaboration_history(request: Request) -> dict[str, Any]:
-    conn = db(); user = require_user(conn, request); conn.close()
-    return collaboration_history(user["id"], request)
+def my_collaboration_history(
+    request: Request,
+    project_type: str | None = Query(default=None),
+    year: int | None = Query(default=None, ge=1900, le=2200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    return collaboration_history(
+        0,
+        request,
+        project_type=project_type,
+        year=year,
+        page=page,
+        page_size=page_size,
+    )
+

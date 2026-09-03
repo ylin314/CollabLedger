@@ -172,3 +172,58 @@ def test_leaving_shared_project_revokes_other_profile_access(tmp_path, monkeypat
     assert owner.get(f"/api/users/{member_user['id']}/profile").status_code == 200
     assert owner.delete(f"/api/projects/{project['id']}/members/{member_user['id']}").status_code == 204
     assert owner.get(f"/api/users/{member_user['id']}/profile").status_code == 403
+
+
+def test_history_contract_filters_and_respects_profile_authorization(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    owner = _client(); member = _client()
+    _account(owner, "履历访问组长", "d6-history-owner@example.com")
+    member_user = _account(member, "履历访问成员", "d6-history-member@example.com")
+    classroom = owner.post("/api/classrooms", json={"name": "履历访问班级"}).json()
+    assert owner.post(f"/api/classrooms/{classroom['id']}/members", json={"user_id": member_user["id"], "role": "student"}).status_code == 201
+
+    shared = owner.post(
+        "/api/projects",
+        json={"name": "共享课程项目", "project_type": "课程项目", "start_date": "2026-01-01", "end_date": "2026-06-30"},
+    ).json()
+    _join(owner, member, shared["id"])
+    shared_task = owner.post(
+        f"/api/projects/{shared['id']}/tasks",
+        json={"title": "共享履历任务", "assignee_id": member_user["id"]},
+    ).json()
+    assert member.post(f"/api/tasks/{shared_task['id']}/start", json={}).status_code == 200
+    assert member.post(f"/api/tasks/{shared_task['id']}/complete", json={"actual_hours": 2}).status_code == 200
+    assert owner.post(f"/api/tasks/{shared_task['id']}/review", json={"quality": 4.0}).status_code == 201
+
+    private = member.post(
+        "/api/projects",
+        json={"name": "私人研究项目", "project_type": "研究项目", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+    ).json()
+    private_task = member.post(
+        f"/api/projects/{private['id']}/tasks",
+        json={"title": "私人履历任务", "assignee_id": member_user["id"]},
+    ).json()
+    assert member.post(f"/api/tasks/{private_task['id']}/start", json={}).status_code == 200
+    assert member.post(f"/api/tasks/{private_task['id']}/complete", json={"actual_hours": 1}).status_code == 200
+
+    assert member.patch(
+        "/api/users/me/authorizations",
+        json={"global_enabled": False, "project_overrides": {str(shared["id"]): True}},
+    ).status_code == 200
+
+    visible = owner.get(f"/api/users/profile/{member_user['id']}/history")
+    assert visible.status_code == 200, visible.text
+    body = visible.json()
+    assert body["total"] == 1
+    assert body["page"] == 1 and body["page_size"] == 20
+    assert body["items"][0]["project_id"] == shared["id"]
+    assert body["items"][0]["tasks_completed"] == 1
+    assert body["items"][0]["average_quality"] == 4.0
+    assert all(row["project_id"] == shared["id"] for row in body["tasks"])
+    assert private["id"] not in {row["project_id"] for row in body["projects"]}
+
+    own = member.get("/api/users/me/history", params={"project_type": "课程项目", "year": 2026})
+    assert own.status_code == 200, own.text
+    own_body = own.json()
+    assert own_body["total"] == 1
+    assert own_body["items"][0]["project_id"] == shared["id"]
