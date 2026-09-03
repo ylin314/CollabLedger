@@ -100,6 +100,10 @@ def update_task(task_id: int, payload: TaskUpdate, request: Request = None) -> d
         conn.close()
         fail(422, "VALIDATION_ERROR", "请求参数不正确", [{"field": "title", "message": "任务标题不能为空"}])
     raw.pop("user_id", None); note = raw.pop("note", None); participant_ids = raw.pop("participant_ids", None)
+    if participant_ids is not None and user is not None and role != "owner":
+        conn.close(); fail(403, "FORBIDDEN", "只有 owner 可以修改任务参与者")
+    current_participant_ids = task_participant_ids(conn, task_id)
+    participant_changed = participant_ids is not None and set(participant_ids) != set(current_participant_ids)
     if request is not None and ("status" in raw or "quality" in raw):
         conn.close()
         field = "status" if "status" in raw else "quality"
@@ -126,13 +130,16 @@ def update_task(task_id: int, payload: TaskUpdate, request: Request = None) -> d
         raw["status"] = "assigned" if raw["assignee_id"] is not None else "unassigned"
     before_status = row["status"]
     changed = {key: value for key, value in raw.items() if value != row[key]}
+    participant_note = "更新参与者" if participant_changed else None
     if changed:
         changed["updated_at"] = now_iso(); conn.execute(f"UPDATE tasks SET {','.join(f'{k}=?' for k in changed)} WHERE id=?", (*changed.values(), task_id))
         actor = user["id"] if user is not None else payload.user_id
         action = "assigned" if "assignee_id" in changed else "updated"
-        _task_log(conn, task_id, actor, action, before_status, changed.get("status", before_status), note or ("更新字段：" + "、".join(k for k in changed if k != "updated_at")))
-    elif note:
-        _task_log(conn, task_id, user["id"] if user is not None else payload.user_id, "updated", before_status, before_status, note)
+        field_note = "更新字段：" + "、".join(k for k in changed if k != "updated_at")
+        log_note = "；".join(item for item in (note, field_note, participant_note) if item)
+        _task_log(conn, task_id, actor, action, before_status, changed.get("status", before_status), log_note)
+    elif note or participant_note:
+        _task_log(conn, task_id, user["id"] if user is not None else payload.user_id, "participants_updated" if participant_note else "updated", before_status, before_status, "；".join(item for item in (note, participant_note) if item))
     if participant_ids is not None: sync_task_participants(conn, task_id, participant_ids, raw.get("assignee_id", row["assignee_id"]))
     conn.commit(); row = task_row(conn, task_id); out = as_task(row, conn); conn.close(); return out
 
