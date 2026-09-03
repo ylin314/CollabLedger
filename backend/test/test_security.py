@@ -175,3 +175,43 @@ def test_non_owner_cannot_manage_members_or_invitations(tmp_path, monkeypatch):
     assert member.get(f"/api/projects/{pid}/invitations").status_code == 403
     assert member.post(f"/api/projects/{pid}/members", json={"user_id": member_user["id"], "role": "viewer"}).status_code == 403
     assert member.delete(f"/api/projects/{pid}/members/{member_user['id']}").status_code == 403
+
+
+def test_llm_errors_are_redacted_in_recommendation_and_weekly_api(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch, "llm-errors.db")
+    monkeypatch.setenv("LLM_API_KEY", "env-secret")
+    monkeypatch.setenv("RECOMMEND_SKILL_MODE", "llm")
+    monkeypatch.setenv("RECOMMEND_USE_LLM_SKILL", "1")
+    monkeypatch.setenv("RECOMMEND_USE_LLM_REASON", "1")
+    owner = TestClient(api.app, base_url="https://testserver")
+    member = TestClient(api.app, base_url="https://testserver")
+    _account(owner, "错误测试组长", "llm-error-owner@example.com")
+    _account(member, "错误测试成员", "llm-error-member@example.com")
+    project_id = _project(owner, "错误脱敏项目")
+    code = owner.post(f"/api/projects/{project_id}/invitations", json={"role": "member"}).json()["code"]
+    assert member.post(f"/api/invitations/{code}/accept").status_code == 200
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Authorization: Bearer sk-provider-secret at https://provider.test/v1/chat?api_key=url-secret")
+
+    import backend.services.analytics as analytics
+    import backend.services.recommend as recommend
+    monkeypatch.setattr(analytics, "llm_json", boom)
+    monkeypatch.setattr(recommend, "llm_json", boom)
+
+    recommendation = owner.get(
+        f"/api/projects/{project_id}/recommendations",
+        params={"task_name": "设计接口"},
+    )
+    assert recommendation.status_code == 200, recommendation.text
+    recommendation_text = json.dumps(recommendation.json(), ensure_ascii=False)
+    assert "sk-provider-secret" not in recommendation_text
+    assert "url-secret" not in recommendation_text
+    assert "[REDACTED]" in recommendation_text
+
+    weekly = owner.post(f"/api/projects/{project_id}/weekly-report")
+    assert weekly.status_code == 200, weekly.text
+    weekly_text = json.dumps(weekly.json(), ensure_ascii=False)
+    assert "sk-provider-secret" not in weekly_text
+    assert "url-secret" not in weekly_text
+    assert "[REDACTED]" in weekly_text

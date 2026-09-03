@@ -31,6 +31,20 @@ STATUS_LABELS = {
     "assigned": "已完成指派",
 }
 
+
+def _safe_llm_error(exc: Exception) -> str:
+    """返回可诊断但不泄露凭据的简短错误。"""
+    text = str(exc).strip() or type(exc).__name__
+    for env_key in ("LLM_API_KEY", "OPENAI_API_KEY"):
+        secret = os.getenv(env_key, "")
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)((?:api[_-]?key|token)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)([?&](?:api_key|key|token)=)[^&\s]+", r"\1[REDACTED]", text)
+    return text[:240]
+
+
 def _env_bool(name: str, default: bool = True) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -253,7 +267,7 @@ def embedding_skill(task: dict[str, Any], candidates: list[dict[str, Any]], cfg:
             notes[item["id"]] = f"语义相似度 {round(scores[item['id']], 2)}"
         return scores, notes, "embedding", None
     except Exception as exc:
-        return {}, {}, "rule", str(exc)
+        return {}, {}, "rule", _safe_llm_error(exc)
 
 
 def llm_skill(task: dict[str, Any], candidates: list[dict[str, Any]], cfg: dict[str, Any]) -> tuple[dict[int, float], dict[int, str], str, Optional[str]]:
@@ -287,7 +301,7 @@ def llm_skill(task: dict[str, Any], candidates: list[dict[str, Any]], cfg: dict[
                 notes[user_id] = str(item["reason"])
         return scores, notes, "llm", None
     except Exception as exc:
-        return {}, {}, "rule", str(exc)
+        return {}, {}, "rule", _safe_llm_error(exc)
 
 
 def llm_reasons(task: dict[str, Any], items: list[dict[str, Any]], cfg: dict[str, Any]) -> tuple[dict[int, str], str, Optional[str]]:
@@ -326,7 +340,7 @@ def llm_reasons(task: dict[str, Any], items: list[dict[str, Any]], cfg: dict[str
         }
         return reasons, "llm", None
     except Exception as exc:
-        return {}, "rule", str(exc)
+        return {}, "rule", _safe_llm_error(exc)
 
 
 def _ai_skill(task: dict[str, Any], candidates: list[dict[str, Any]], cfg: dict[str, Any]) -> tuple[dict[int, float], dict[int, str], str, Optional[str]]:

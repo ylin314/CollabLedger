@@ -95,7 +95,8 @@ def _safe_llm_error(exc: Exception) -> str:
         secret = os.getenv(env_key, "")
         if secret:
             text = text.replace(secret, "[REDACTED]")
-    text = re.sub(r"(?i)((?:authorization|api[_-]?key|token|bearer)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)((?:api[_-]?key|token)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", text)
     text = re.sub(r"(?i)([?&](?:api_key|key|token)=)[^&\s]+", r"\1[REDACTED]", text)
     return text[:240]
 
@@ -355,7 +356,7 @@ def _llm_member_summaries(project_id: int, week: date, member_stats: list[dict[s
         result = {int(item["user_id"]): str(item.get("summary") or "").strip() for item in data.get("summaries") or [] if item.get("summary")}
         return result, "llm", None if result else "LLM 未返回任何成员摘要"
     except Exception as exc:
-        return {}, "rule", str(exc)
+        return {}, "rule", _safe_llm_error(exc)
 
 
 def _llm_overall_insight(project_id: int, week: date, summary: dict[str, Any], risks: list[str]) -> tuple[dict[str, Any], str, Optional[str]]:
@@ -386,7 +387,7 @@ def _llm_overall_insight(project_id: int, week: date, summary: dict[str, Any], r
             return {}, "rule", "LLM 未返回结构化分析"
         return struct, "llm", None
     except Exception as exc:
-        return {}, "rule", str(exc)
+        return {}, "rule", _safe_llm_error(exc)
 
 
 def AgentConfigAvailable() -> bool:

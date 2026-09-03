@@ -16,7 +16,8 @@ def _safe_runtime_error(exc: Exception, secret: str = "") -> str:
     text = str(exc).strip() or type(exc).__name__
     if secret:
         text = text.replace(secret, "[REDACTED]")
-    text = re.sub(r"(?i)((?:authorization|api[_-]?key|token|bearer)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)((?:api[_-]?key|token)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", text)
     return text[:240]
 
 
