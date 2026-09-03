@@ -357,7 +357,7 @@ def _dimension(score: float, weight: float, note: str, evidence: list[str], *, s
 
 def _profiles(conn, project_id: int, load_by_id: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT u.id,u.name,u.skills,u.max_concurrent_tasks,m.role FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? ORDER BY u.id",
+        "SELECT u.id,u.name,u.skills,u.max_concurrent_tasks,m.role FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? AND m.status='active' ORDER BY u.id",
         (project_id,),
     ).fetchall()
     profiles = []

@@ -164,7 +164,13 @@ def _project_stats(conn: sqlite3.Connection, project_id: int) -> dict[str, Any]:
         SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) completed_task_count,
         SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) in_progress_task_count,
         SUM(CASE WHEN status IN ('overdue','unfinished') THEN 1 ELSE 0 END) overdue_task_count
-        FROM tasks WHERE project_id=? AND deleted_at IS NULL""", (project_id,)
+        FROM tasks t WHERE t.project_id=? AND t.deleted_at IS NULL
+        AND (t.assignee_id IS NULL OR EXISTS (
+            SELECT 1 FROM memberships active_members
+            WHERE active_members.project_id=t.project_id
+              AND active_members.user_id=t.assignee_id
+              AND active_members.status='active'
+        ))""", (project_id,)
     ).fetchone()
     member_count = conn.execute("SELECT COUNT(*) n FROM memberships WHERE project_id=? AND status='active'", (project_id,)).fetchone()["n"]
     total = counts["task_count"] or 0

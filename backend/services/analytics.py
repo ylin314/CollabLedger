@@ -41,7 +41,7 @@ def _load_weight(status: str) -> float:
 
 def internal_member_load(project_id: int) -> dict[str, Any]:
     conn = db(); ensure_project(conn, project_id)
-    members = conn.execute("SELECT u.id user_id,u.name,u.max_concurrent_tasks FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? ORDER BY u.id", (project_id,)).fetchall()
+    members = conn.execute("SELECT u.id user_id,u.name,u.max_concurrent_tasks FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? AND m.status='active' ORDER BY u.id", (project_id,)).fetchall()
     result = []
     for member in members:
         tasks = conn.execute("SELECT id,status,COALESCE(estimated_hours,0) estimated_hours FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL AND status IN ('assigned','in_progress','paused','overdue')", (project_id, member["user_id"])).fetchall()
@@ -157,7 +157,7 @@ def internal_project_risks(project_id: int, summarize: bool = False) -> dict[str
 
 
 def internal_project_report(project_id: int) -> dict[str, Any]:
-    conn = db(); project = ensure_project(conn, project_id); stats = _project_stats(conn, project_id); members = conn.execute("SELECT u.id,u.name FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? ORDER BY u.id", (project_id,)).fetchall(); items = []
+    conn = db(); project = ensure_project(conn, project_id); stats = _project_stats(conn, project_id); members = conn.execute("SELECT u.id,u.name FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? AND m.status='active' ORDER BY u.id", (project_id,)).fetchall(); items = []
     for member in members:
         task_stats = conn.execute("""SELECT COUNT(*) total,SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) completed,SUM(CASE WHEN status IN ('overdue','unfinished') THEN 1 ELSE 0 END) overdue,SUM(COALESCE(actual_hours,0)) hours FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL""", (project_id, member["id"])).fetchone()
         quality = conn.execute("SELECT AVG(COALESCE(r.quality,t.quality)) q FROM tasks t LEFT JOIN task_reviews r ON r.task_id=t.id WHERE t.project_id=? AND t.assignee_id=? AND (r.quality IS NOT NULL OR t.quality IS NOT NULL)", (project_id, member["id"])).fetchone()["q"]
@@ -173,31 +173,34 @@ def _week_bounds(start_date: Optional[date], end_date: Optional[date]) -> tuple[
 
 
 def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str, Any]:
-    """从真实项目表生成一份周报快照；工时与贡献按 D3 的诚实口径计算。"""
+    """从真实项目表生成周报；当前成员统计排除退出成员，待处置风险仍保留，历史原始数据不删除。"""
     conn = db(); project = ensure_project(conn, project_id)
     start_s, end_s = start.isoformat(), end.isoformat()
     date_expr = "COALESCE(substr(occurred_at,1,10),substr(created_at,1,10))"
+    active_task_scope = "(assignee_id IS NULL OR EXISTS (SELECT 1 FROM memberships active_members WHERE active_members.project_id=tasks.project_id AND active_members.user_id=tasks.assignee_id AND active_members.status='active'))"
+    active_checkin_scope = "EXISTS (SELECT 1 FROM memberships active_members WHERE active_members.project_id=task_checkins.project_id AND active_members.user_id=task_checkins.user_id AND active_members.status='active')"
+    active_contribution_scope = "EXISTS (SELECT 1 FROM memberships active_members WHERE active_members.project_id=contributions.project_id AND active_members.user_id=contributions.user_id AND active_members.status='active')"
     task_total = conn.execute(
-        "SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL",
+        f"SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND {active_task_scope}",
         (project_id,),
     ).fetchone()["n"]
     completed = conn.execute(
-        "SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL "
+        f"SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND {active_task_scope} "
         "AND status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ?",
         (project_id, start_s, end_s),
     ).fetchone()["n"]
     in_progress = conn.execute(
-        "SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND status='in_progress'",
+        f"SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND {active_task_scope} AND status='in_progress'",
         (project_id,),
     ).fetchone()["n"]
     overdue = conn.execute(
-        "SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL "
+        f"SELECT COUNT(*) n FROM tasks WHERE project_id=? AND deleted_at IS NULL AND {active_task_scope} "
         "AND status IN ('overdue','unfinished')",
         (project_id,),
     ).fetchone()["n"]
     checkins = conn.execute(
         "SELECT COUNT(*) n,COALESCE(SUM(hours),0) hours FROM task_checkins "
-        "WHERE project_id=? AND substr(created_at,1,10) BETWEEN ? AND ?",
+        f"WHERE project_id=? AND substr(created_at,1,10) BETWEEN ? AND ? AND {active_checkin_scope}",
         (project_id, start_s, end_s),
     ).fetchone()
     contribution_stats = conn.execute(
@@ -205,17 +208,17 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
         f"SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) confirmed_count, "
         f"SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending_count, "
         f"SUM(CASE WHEN status='disputed' THEN 1 ELSE 0 END) disputed_count "
-        f"FROM contributions WHERE project_id=? AND deleted_at IS NULL AND {date_expr} BETWEEN ? AND ?",
+        f"FROM contributions WHERE project_id=? AND deleted_at IS NULL AND {active_contribution_scope} AND {date_expr} BETWEEN ? AND ?",
         (project_id, start_s, end_s),
     ).fetchone()
     task_hours_all = conn.execute(
-        "SELECT COALESCE(SUM(actual_hours),0) hours FROM tasks WHERE project_id=? "
-        "AND deleted_at IS NULL AND substr(updated_at,1,10) BETWEEN ? AND ?",
+        f"SELECT COALESCE(SUM(actual_hours),0) hours FROM tasks WHERE project_id=? "
+        f"AND deleted_at IS NULL AND {active_task_scope} AND substr(updated_at,1,10) BETWEEN ? AND ?",
         (project_id, start_s, end_s),
     ).fetchone()["hours"] or 0
     highlights = [
         row["title"] for row in conn.execute(
-            "SELECT title FROM tasks WHERE project_id=? AND deleted_at IS NULL "
+            f"SELECT title FROM tasks WHERE project_id=? AND deleted_at IS NULL AND {active_task_scope} "
             "AND status='completed' AND substr(updated_at,1,10) BETWEEN ? AND ? "
             "ORDER BY updated_at DESC LIMIT 5",
             (project_id, start_s, end_s),
@@ -223,7 +226,7 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
     ]
     member_rows = conn.execute(
         "SELECT u.id,u.name FROM users u JOIN memberships m ON m.user_id=u.id "
-        "WHERE m.project_id=? ORDER BY u.id",
+        "WHERE m.project_id=? AND m.status='active' ORDER BY u.id",
         (project_id,),
     ).fetchall()
     members = []
@@ -238,7 +241,7 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
         ).fetchone()
         ci = conn.execute(
             "SELECT COUNT(*) n,COALESCE(SUM(hours),0) hours FROM task_checkins "
-            "WHERE project_id=? AND user_id=? AND substr(created_at,1,10) BETWEEN ? AND ?",
+            f"WHERE project_id=? AND user_id=? AND substr(created_at,1,10) BETWEEN ? AND ? AND {active_checkin_scope}",
             (project_id, member["id"], start_s, end_s),
         ).fetchone()
         cs = conn.execute(
@@ -246,7 +249,7 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
             f"SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) confirmed_count, "
             f"SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending_count, "
             f"SUM(CASE WHEN status='disputed' THEN 1 ELSE 0 END) disputed_count "
-            f"FROM contributions WHERE project_id=? AND user_id=? AND deleted_at IS NULL AND {date_expr} BETWEEN ? AND ?",
+            f"FROM contributions WHERE project_id=? AND user_id=? AND deleted_at IS NULL AND {active_contribution_scope} AND {date_expr} BETWEEN ? AND ?",
             (project_id, member["id"], start_s, end_s),
         ).fetchone()
         checkin_count = ci["n"] or 0
@@ -577,7 +580,7 @@ def internal_project_snapshot(project_id: int) -> dict[str, Any]:
 
 
 def list_members_internal(conn, project_id: int) -> list[dict[str, Any]]:
-    rows = conn.execute("SELECT m.user_id,u.name,m.role,u.skills,u.max_concurrent_tasks,u.status,m.joined_at FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY m.joined_at", (project_id,)).fetchall(); result = []
+    rows = conn.execute("SELECT m.user_id,u.name,m.role,u.skills,u.max_concurrent_tasks,u.status,m.joined_at FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.status='active' ORDER BY m.joined_at", (project_id,)).fetchall(); result = []
     for row in rows:
         item = dict(row); item["skills"] = json.loads(item["skills"] or "[]"); result.append(item)
     return result
