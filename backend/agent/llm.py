@@ -9,6 +9,11 @@ import httpx
 from .config import AgentConfig
 
 
+def _repair_json(text: str) -> str:
+    """轻量修复 LLM 常见的 JSON 格式抖动：数组元素对象之间漏逗号。"""
+    return re.sub(r"\}(\s*)\{", r"},\1{", text)
+
+
 def _extract_json(text: str) -> dict[str, Any]:
     """从 LLM 输出中提取 JSON 对象（兼容 markdown 围栏与前后杂讯）。"""
     raw = (text or "").strip()
@@ -18,10 +23,13 @@ def _extract_json(text: str) -> dict[str, Any]:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start < 0 or end <= start:
-            raise
-        data = json.loads(raw[start : end + 1])
+        try:
+            data = json.loads(_repair_json(raw))
+        except json.JSONDecodeError:
+            start, end = raw.find("{"), raw.rfind("}")
+            if start < 0 or end <= start:
+                raise
+            data = json.loads(raw[start : end + 1])
     if not isinstance(data, dict):
         raise RuntimeError("LLM 返回的 JSON 不是对象")
     return data
@@ -39,6 +47,7 @@ class LLMClient:
         timeout: float | None = None,
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> str:
         if not self.config.configured:
             raise RuntimeError("LLM_API_KEY 未配置")
@@ -52,6 +61,8 @@ class LLMClient:
             }
             if effort:
                 body["reasoning_effort"] = effort
+            if response_format:
+                body["response_format"] = response_format
             response = httpx.post(
                 self.config.chat_completions_url,
                 headers={"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"},
@@ -81,7 +92,13 @@ class LLMClient:
         messages: list[dict[str, str]],
         timeout: float | None = None,
         max_tokens: int | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """结构化 JSON 决策；解析失败时抛出异常由调用方回退规则。"""
-        content = self.complete(messages, timeout, max_tokens=max_tokens)
+        content = self.complete(
+            messages,
+            timeout,
+            max_tokens=max_tokens,
+            response_format=response_format if response_format is not None else {"type": "json_object"},
+        )
         return _extract_json(content)

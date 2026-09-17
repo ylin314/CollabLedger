@@ -8,7 +8,7 @@ from typing import Any, Optional
 import httpx
 
 from backend.agent.config import AgentConfig
-from backend.agent.llm import LLMClient
+from backend.agent.llm import LLMClient, _extract_json
 from backend.core.context import *
 
 
@@ -174,29 +174,17 @@ def _efficiency(conn, project_id: int, user_id: int) -> tuple[float, int, bool, 
     return _clip(min(1.2, raw) / 1.2), len(ratios), False, round(raw, 2)
 
 
-def _extract_json(text: str) -> dict[str, Any]:
-    raw = (text or "").strip()
-    fence = chr(96) * 3
-    if raw.startswith(fence):
-        raw = re.sub(r"^" + fence + r"(?:json)?", "", raw, flags=re.IGNORECASE).rstrip(chr(96)).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start < 0 or end <= start:
-            raise
-        data = json.loads(raw[start : end + 1])
-    if not isinstance(data, dict):
-        raise RuntimeError("LLM 返回的 JSON 不是对象")
-    return data
-
 
 def llm_json(prompt: str, timeout: float) -> dict[str, Any]:
-    """LLM JSON call with one fast retry on weak-network read timeout."""
-    try:
-        return _llm_json_once(prompt, timeout)
-    except httpx.TimeoutException:
-        return _llm_json_once(prompt, timeout)
+    """LLM JSON 调用：超时与解析类失败都重试一次，弱网或格式抖动不影响主路径。"""
+    last_error: BaseException | None = None
+    for _attempt in range(2):
+        try:
+            return _llm_json_once(prompt, timeout)
+        except (httpx.TimeoutException, ValueError, RuntimeError) as exc:
+            last_error = exc
+    assert last_error is not None
+    raise last_error
 
 
 def _llm_json_once(prompt: str, timeout: float) -> dict[str, Any]:
@@ -215,9 +203,10 @@ def _llm_json_once(prompt: str, timeout: float) -> dict[str, Any]:
     )
     content = client.complete(
         [
-            {"role": "system", "content": "你是协作账本的任务推荐助手。只根据给定事实打分和写理由，禁止编造经历，禁止排名或负面标签。对低匹配候选人使用中性、建设性表述，不使用“不适合”“弱”“差”。只返回 JSON。"},
+            {"role": "system", "content": "你是协作账本的任务推荐助手。只根据给定事实打分和写理由，禁止编造经历，禁止排名或负面标签。对低匹配候选人使用中性、建设性表述，不使用“不适合”“弱”“差”。只返回严格合法的 JSON 对象。"},
             {"role": "user", "content": prompt},
-        ]
+        ],
+        response_format={"type": "json_object"},
     )
     return _extract_json(content)
 
@@ -288,7 +277,7 @@ def llm_skill(task: dict[str, Any], candidates: list[dict[str, Any]], cfg: dict[
     }
     prompt = (
         "根据任务与成员技能、历史任务的语义相关性，为每人打 0 到 1 的 skill 分。只依据事实，不编造。"
-        "返回 JSON 对象，含 scores 数组，每项含 user_id、skill、reason。\n"
+        "返回严格合法的 JSON 对象，含 scores 数组，每项含 user_id、skill、reason；不要 Markdown 围栏、不要注释、不要尾随逗号，对象间用逗号分隔。\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     try:
@@ -326,7 +315,7 @@ def llm_reasons(task: dict[str, Any], items: list[dict[str, Any]], cfg: dict[str
     ]
     prompt = (
         "为每位候选人写一句中文推荐理由，先结论后事实，必须引用候选人四维事实数据中的具体数值或样本情况，禁止编造、禁止排名、禁止负面标签。低匹配候选人请说明当前任务与本人技能相关性较低，并指出更匹配的方向；不要使用“不适合”“弱”“差”。"
-        "返回 JSON 对象，含 reasons 数组，每项含 user_id 与 summary。\n任务："
+        "返回严格合法的 JSON 对象，含 reasons 数组，每项含 user_id 与 summary；不要 Markdown 围栏、不要注释、不要尾随逗号，对象间用逗号分隔。\n任务："
         + json.dumps({"title": task.get("title"), "task_type": task.get("task_type"), "description": (task.get("description") or "")[:400]}, ensure_ascii=False)
         + "\n候选人："
         + json.dumps(compact, ensure_ascii=False)

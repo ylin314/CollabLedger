@@ -159,6 +159,28 @@ function RecommendModal({
     }
   }
   const results = payload?.recommendations || [];
+  const hasErrors = payload?.errors && Object.keys(payload.errors).length > 0;
+  const errText = [
+    payload?.errors?.skill_error,
+    payload?.errors?.reason_error,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const isNetworkError = /超时|timeout|连接|网络|network|Connection/i.test(
+    errText,
+  );
+  let degradeTitle = "⚠ AI 服务暂不可用，已自动回退规则计算";
+  let degradeHint =
+    "网络较差时可在服务端 .env 调大 RECOMMEND_LLM_TIMEOUT（默认 30 秒）后重启，即可恢复 AI 增强。";
+  if (isNetworkError) {
+    degradeTitle = "⚠ AI 服务网络不稳定，已自动回退规则计算";
+  } else if (payload?.errors?.reason_error && !payload?.errors?.skill_error) {
+    degradeTitle = "⚠ AI 理由生成失败，已自动回退规则理由";
+    degradeHint = "技能评分仍由 AI 完成；可稍后重试生成理由。";
+  } else {
+    degradeTitle = "⚠ AI 返回格式异常，已自动回退规则计算";
+    degradeHint = "可稍后重试，或直接使用下方规则推荐结果。";
+  }
   return (
     <>
       <div className="modal-backdrop">
@@ -189,10 +211,10 @@ function RecommendModal({
               技能来源 {sourceLabel(payload?.skill_source)} · 理由来源{" "}
               {sourceLabel(payload?.reason_source)} · 不会自动指派
             </p>
-            {payload?.errors && Object.keys(payload.errors).length > 0 && (
+            {hasErrors && (
               <div className="degrade-note">
-                <strong>⚠ AI 服务暂不可用，已自动回退规则计算</strong>
-<span>网络较差时可在服务端 .env 调大 RECOMMEND_LLM_TIMEOUT（默认 30 秒）后重启，即可恢复 AI 增强。</span>
+                <strong>{degradeTitle}</strong>
+                <span>{degradeHint}</span>
                 {payload.errors.skill_error ? (
                   <span>技能：{payload.errors.skill_error}</span>
                 ) : null}

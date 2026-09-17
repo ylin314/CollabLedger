@@ -24,7 +24,7 @@ def test_agent_llm_uses_chat_completions(monkeypatch, tmp_path):
     runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="deepseek-v4-flash"))
     seen = {}
 
-    def fake_complete(messages, timeout=None, max_tokens=None):
+    def fake_complete(messages, timeout=None, max_tokens=None, response_format=None):
         seen["messages"] = messages
         return json.dumps({"action": "answer", "answer": "模型回答"}, ensure_ascii=False)
 
@@ -66,7 +66,7 @@ def test_agent_react_loop_tool_trace_and_citations(tmp_path, monkeypatch):
     runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="deepseek-v4-flash"))
     calls = []
 
-    def fake_complete(messages, timeout=None, max_tokens=None):
+    def fake_complete(messages, timeout=None, max_tokens=None, response_format=None):
         calls.append(messages)
         if len(calls) == 1:
             return json.dumps({"action": "tool", "tool": "task_detail", "args": {"task_id": 7}}, ensure_ascii=False)
@@ -90,7 +90,7 @@ def test_agent_react_loop_tool_trace_and_citations(tmp_path, monkeypatch):
 
 def test_agent_unknown_tool_falls_back(tmp_path, monkeypatch):
     runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="deepseek-v4-flash"))
-    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: json.dumps({"action": "tool", "tool": "delete_all", "args": {}}, ensure_ascii=False)
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None, response_format=None: json.dumps({"action": "tool", "tool": "delete_all", "args": {}}, ensure_ascii=False)
     runtime.tools.run = lambda project_id, name, arguments=None: {"project": {"name": "测试"}, "tasks": [], "members": [], "report": {"overall": {"tasks": 0, "completed": 0}}, "risks": {"risks": []}}
     result = runtime.run(1, "帮我看看项目情况")
 
@@ -144,7 +144,7 @@ def test_agent_memory_summary_failure_keeps_messages(tmp_path, monkeypatch):
 
 def test_agent_llm_exception_falls_back_to_rules(tmp_path, monkeypatch):
     runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="deepseek-v4-flash"))
-    def boom(messages, timeout=None, max_tokens=None):
+    def boom(messages, timeout=None, max_tokens=None, response_format=None):
         raise RuntimeError("LLM 超时")
     runtime.llm.complete = boom
 
@@ -166,7 +166,7 @@ def test_agent_llm_exception_falls_back_to_rules(tmp_path, monkeypatch):
 
 def test_agent_llm_invalid_json_falls_back(tmp_path, monkeypatch):
     runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="deepseek-v4-flash"))
-    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: "这不是 JSON"
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None, response_format=None: "这不是 JSON"
     runtime.tools.run = lambda project_id, name, arguments=None: {"project": {"name": "测试"}, "tasks": [], "members": [], "report": {"overall": {"tasks": 0, "completed": 0}}, "risks": {"risks": []}}
     result = runtime.run(1, "帮我看看")
     assert result["source"] == "fallback"
@@ -238,7 +238,7 @@ def test_agent_clarify_action_returns_question(tmp_path):
         "risks": {"risks": []},
         "load": {"members": []},
     }
-    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: json.dumps(
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None, response_format=None: json.dumps(
         {"action": "clarify", "question": "你想查看哪一个任务？"}, ensure_ascii=False
     )
 
@@ -257,7 +257,7 @@ def test_agent_platform_activity_tool_loop_and_task_name_extraction(tmp_path):
             {"action": "answer", "answer": "**本周 GitHub 活动**已按入库记录完成分析。"},
         ]
     )
-    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: json.dumps(next(decisions), ensure_ascii=False)
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None, response_format=None: json.dumps(next(decisions), ensure_ascii=False)
 
     def fake_run(project_id, name, arguments=None):
         if name == "platform_activity":
@@ -298,7 +298,7 @@ def test_agent_answer_fact_gate_requires_weekly_tool(tmp_path):
             {"action": "answer", "answer": "本周期还没有已生成周报。"},
         ]
     )
-    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: json.dumps(next(decisions), ensure_ascii=False)
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None, response_format=None: json.dumps(next(decisions), ensure_ascii=False)
 
     def fake_run(project_id, name, arguments=None):
         if name == "weekly_report":
@@ -329,7 +329,7 @@ def test_agent_failed_weekly_tool_cannot_satisfy_fact_gate(tmp_path):
             {"action": "answer", "answer": "无周报事实也直接回答"},
         ]
     )
-    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: json.dumps(next(decisions), ensure_ascii=False)
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None, response_format=None: json.dumps(next(decisions), ensure_ascii=False)
 
     def fake_run(project_id, name, arguments=None):
         if name == "weekly_report":
@@ -374,7 +374,7 @@ def test_platform_activity_uses_runtime_db_path_when_cwd_differs(tmp_path, monke
 
 def test_agent_recommendation_fallback_uses_dedicated_tool(tmp_path):
     runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="test"))
-    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None: (_ for _ in ()).throw(RuntimeError("LLM 超时"))
+    runtime.llm.complete = lambda messages, timeout=None, max_tokens=None, response_format=None: (_ for _ in ()).throw(RuntimeError("LLM 超时"))
 
     def fake_run(project_id, name, arguments=None):
         if name == "recommend":
