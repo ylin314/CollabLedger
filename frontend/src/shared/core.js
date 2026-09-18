@@ -28,20 +28,12 @@ function initials(name = "") {
   return name.slice(0, 1);
 }
 
-function formatDate(value) {
-  if (!value) return "未设置";
-  const d = new Date(value);
-  return `${d.getMonth() + 1}月${d.getDate()}日`;
-}
-
-function greetingStamp(date = new Date()) {
-  return `${["周日", "周一", "周二", "周三", "周四", "周五", "周六"][date.getDay()]} · ${date.getMonth() + 1}月${date.getDate()}日`;
-}
-
 function greetingTitle(name) {
-  const hour = new Date().getHours();
-  const hello = hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
-  return `${hello}，${name || "同学"}`;
+  return `你好，${name || "同学"}`;
+}
+
+function memberAvatar(member) {
+  return member?.avatar_url || member?.assignee_avatar_url || "";
 }
 
 const routePages = new Set([
@@ -149,9 +141,8 @@ export {
   avatarColors,
   emailLooksValid,
   initials,
-  formatDate,
-  greetingStamp,
   greetingTitle,
+  memberAvatar,
   routePages,
   readRoute,
   routeHash,

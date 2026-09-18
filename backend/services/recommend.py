@@ -360,7 +360,7 @@ def _dimension(score: float, weight: float, note: str, evidence: list[str], *, s
 
 def _profiles(conn, project_id: int, load_by_id: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT u.id,u.name,u.skills,u.max_concurrent_tasks,m.role FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? AND m.status='active' ORDER BY u.id",
+        "SELECT u.id,u.name,u.skills,u.max_concurrent_tasks,u.avatar_url,m.role FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? AND m.status='active' ORDER BY u.id",
         (project_id,),
     ).fetchall()
     profiles = []
@@ -373,6 +373,7 @@ def _profiles(conn, project_id: int, load_by_id: dict[int, dict[str, Any]]) -> l
             {
                 "id": row["id"],
                 "name": row["name"],
+                "avatar_url": row["avatar_url"],
                 "role": row["role"],
                 "skills": _parse_skills(row["skills"]),
                 "history_types": sorted({item["task_type"] for item in history if item["task_type"]}),
@@ -496,6 +497,7 @@ def _score_candidates(project_id: int, task: dict[str, Any], limit: int, include
         items.append({
             "user_id": profile["id"],
             "name": profile["name"],
+            "avatar_url": profile.get("avatar_url"),
             "role": profile["role"],
             "score": round(total, 1),
             "weights": RECOMMEND_WEIGHTS,
@@ -637,7 +639,7 @@ def recommendations(project_id: int, task_name: str, task_type: Optional[str], e
 def unassigned_tasks(project_id: int) -> list[dict[str, Any]]:
     conn = db()
     rows = conn.execute(
-        """SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id
+        """SELECT t.*,u.name assignee_name,u.avatar_url assignee_avatar_url FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id
            WHERE t.project_id=? AND t.deleted_at IS NULL AND (t.assignee_id IS NULL OR t.status='unassigned')
            ORDER BY t.id""",
         (project_id,),

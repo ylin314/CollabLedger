@@ -1,13 +1,6 @@
-import { Archive, ArrowRight, CalendarDays, CheckCircle2, Users } from "lucide-react";
+import { Archive, ArrowRight, CheckCircle2, Users } from "lucide-react";
 import type { ProjectRole, ProjectSummary } from "../../api/types";
 import { PageTitle } from "../../shared/components";
-
-function formatShortDate(value?: string) {
-  if (!value) return "未记录";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
-}
 
 function roleLabel(role: ProjectRole) {
   return { owner: "组长", member: "成员", viewer: "只读" }[role] || role;
@@ -40,7 +33,6 @@ function HistoryProjectsView({ projects, onOpen }: HistoryProjectsViewProps) {
                   </div>
                   {project.description && <p>{project.description}</p>}
                   <div className="history-project-facts">
-                    <span><CalendarDays /> 最后更新 {formatShortDate(project.updated_at)}</span>
                     <span><Users /> {project.member_count || 0} 位成员</span>
                     <span><CheckCircle2 /> {completed} / {total} 项完成</span>
                   </div>
@@ -68,4 +60,4 @@ function HistoryProjectsView({ projects, onOpen }: HistoryProjectsViewProps) {
   );
 }
 
-export { HistoryProjectsView, formatShortDate, roleLabel };
+export { HistoryProjectsView, roleLabel };

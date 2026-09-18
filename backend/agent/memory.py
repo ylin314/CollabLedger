@@ -70,7 +70,7 @@ class AgentMemory:
             else:
                 conn.execute(
                     "INSERT INTO agent_sessions(project_id,user_id,session_key,title,created_at,updated_at) VALUES (?,?,?,?,?,?)",
-                    (project_id, user_id, session_id, None, stamp, stamp),
+                    (project_id, user_id, session_id, "新对话", stamp, stamp),
                 )
         conn.execute(
             "INSERT INTO agent_memory(project_id,session_id,role,content,created_at,user_id) VALUES (?,?,?,?,?,?)",
@@ -188,6 +188,59 @@ class AgentMemory:
         conn.commit()
         conn.close()
         return True
+
+    def session_title(self, project_id: int, session_id: str = "default", user_id: int | None = None) -> str | None:
+        conn = self._connect()
+        if user_id is None:
+            row = conn.execute(
+                "SELECT title FROM agent_sessions WHERE project_id=? AND user_id IS NULL AND session_key=?",
+                (project_id, session_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT title FROM agent_sessions WHERE project_id=? AND user_id=? AND session_key=?",
+                (project_id, user_id, session_id),
+            ).fetchone()
+        conn.close()
+        return row["title"] if row else None
+
+    def set_session_title(
+        self,
+        project_id: int,
+        session_id: str,
+        title: str,
+        user_id: int | None = None,
+    ) -> str:
+        stamp = now_iso()
+        cleaned = (title or "").strip()[:100] or "新对话"
+        conn = self._connect()
+        project_exists = conn.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project_exists:
+            conn.close()
+            return cleaned
+        if user_id is None:
+            session = conn.execute(
+                "SELECT id FROM agent_sessions WHERE project_id=? AND user_id IS NULL AND session_key=?",
+                (project_id, session_id),
+            ).fetchone()
+        else:
+            session = conn.execute(
+                "SELECT id FROM agent_sessions WHERE project_id=? AND user_id=? AND session_key=?",
+                (project_id, user_id, session_id),
+            ).fetchone()
+        if session:
+            conn.execute(
+                "UPDATE agent_sessions SET title=?,updated_at=? WHERE id=?",
+                (cleaned, stamp, session["id"]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO agent_sessions(project_id,user_id,session_key,title,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                (project_id, user_id, session_id, cleaned, stamp, stamp),
+            )
+        conn.commit()
+        conn.close()
+        return cleaned
 
     def clear(self, project_id: int, session_id: str = "default", user_id: int | None = None) -> None:
         conn = self._connect()

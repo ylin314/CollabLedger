@@ -44,7 +44,7 @@ def list_tasks(
     total = conn.execute(f"SELECT COUNT(*) n FROM tasks t WHERE {condition}", args).fetchone()["n"]
     sort_sql = "CASE t.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END" if sort == "priority" else f"t.{sort}"
     offset, limit = pagination(page, page_size)
-    rows = conn.execute(f"SELECT t.*,u.name assignee_name,r.name reviewer_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN users r ON r.id=t.reviewer_id WHERE {condition} ORDER BY {sort_sql} {order.upper()},t.id {order.upper()} LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+    rows = conn.execute(f"SELECT t.*,u.name assignee_name,u.avatar_url assignee_avatar_url,r.name reviewer_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN users r ON r.id=t.reviewer_id WHERE {condition} ORDER BY {sort_sql} {order.upper()},t.id {order.upper()} LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
     task_ids = [row["id"] for row in rows]
     participant_map: dict[int, list[dict[str, Any]]] = {task_id: [] for task_id in task_ids}
     if task_ids:

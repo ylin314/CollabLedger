@@ -107,25 +107,7 @@ function CreateProjectView({ currentUser, onCreated, onCancel }) {
               placeholder="说明项目目标和协作范围…"
             />
           </label>
-          <div className="form-row">
-            <label>
-              开始日期
-              <input
-                type="date"
-                value={form.start_date}
-                onChange={(e) => update("start_date", e.target.value)}
-              />
-            </label>
-            <label>
-              结束日期
-              <input
-                type="date"
-                value={form.end_date}
-                onChange={(e) => update("end_date", e.target.value)}
-              />
-            </label>
-          </div>
-          <div className="form-section-title">创建者</div>
+                    <div className="form-section-title">创建者</div>
           <p className="modal-sub">
             当前登录用户 {currentUser?.name} 将自动成为项目负责人。
           </p>

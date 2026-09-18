@@ -211,6 +211,61 @@ class AgentRuntime:
             add({"type": "platform_activity", "message": "平台活动 {count} 项".format(count=platform.get("total", 0)), "sources": platform.get("by_source") or {}})
         return citations
 
+    def _fallback_session_title(self, message: str) -> str:
+        cleaned = re.sub(r"\s+", " ", (message or "").strip())
+        extra = "".join(chr(code) for code in (0xFF1A, 0xFF0C, 0x3002, 0xFF1F, 0xFF01))
+        cleaned = cleaned.strip(" :,.?" + extra)
+        prefixes = (
+            chr(0x8BF7),
+            chr(0x5E2E) + chr(0x6211),
+            chr(0x5E2E) + chr(0x5FD9),
+            chr(0x9EBB) + chr(0x70E6),
+            chr(0x53EF) + chr(0x4EE5),
+            chr(0x80FD) + chr(0x5426),
+        )
+        for prefix in prefixes:
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix):].strip()
+                break
+        if not cleaned:
+            return chr(0x65B0) + chr(0x5BF9) + chr(0x8BDD)
+        return cleaned[:18]
+
+    def _generate_session_title(self, message: str, answer: str | None = None) -> str:
+        fallback = self._fallback_session_title(message)
+        complete = getattr(self.llm, "complete", None)
+        if not self.config.configured or getattr(complete, "__func__", None) is not LLMClient.complete:
+            return fallback
+        try:
+            raw = str(
+                complete(
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                chr(0x6839) + chr(0x636E) + chr(0x7528) + chr(0x6237) + chr(0x7684) + chr(0x7B2C) + chr(0x4E00) + chr(0x6761) + chr(0x6D88) + chr(0x606F)
+                                + chr(0xFF0C) + chr(0x751F) + chr(0x6210) + chr(0x4E0D) + chr(0x8D85) + chr(0x8FC7) + " 18 " + chr(0x4E2A) + chr(0x6C49) + chr(0x5B57)
+                                + chr(0x7684) + chr(0x4E2D) + chr(0x6587) + chr(0x4F1A) + chr(0x8BDD) + chr(0x6807) + chr(0x9898) + chr(0x3002)
+                                + chr(0x53EA) + chr(0x8F93) + chr(0x51FA) + chr(0x6807) + chr(0x9898) + chr(0x672C) + chr(0x8EAB) + chr(0xFF0C)
+                                + chr(0x4E0D) + chr(0x8981) + chr(0x5F15) + chr(0x53F7) + chr(0x3001) + chr(0x6807) + chr(0x70B9) + chr(0x6216) + chr(0x89E3) + chr(0x91CA) + chr(0x3002)
+                            ),
+                        },
+                        {"role": "user", "content": message},
+                    ],
+                    max_tokens=40,
+                )
+            ).strip()
+        except TypeError:
+            return fallback
+        except Exception:
+            return fallback
+        quotes = {chr(34), chr(39), chr(0x201C), chr(0x201D), chr(0x2018), chr(0x2019)}
+        title = "".join(ch for ch in raw if ch not in quotes and not ch.isspace())
+        blocked = {chr(0x65B0) + chr(0x5BF9) + chr(0x8BDD), chr(0x9ED8) + chr(0x8BA4) + chr(0x4F1A) + chr(0x8BDD)}
+        if not title or title in blocked or title.startswith("{") or "action" in title:
+            return fallback
+        return title[:18]
+
     def run(self, project_id: int, message: str, session_id: str = "default", user_id: int | None = None) -> dict[str, Any]:
         plan = self.planner.build(message)
         facts: dict[str, Any] = {}
@@ -251,6 +306,8 @@ class AgentRuntime:
                 tool_trace.append({"tool": "task_detail", "args": args, "ok": err is None, "error": err})
 
         history = self.memory.recent(project_id, session_id, user_id=user_id)
+        current_title = self.memory.session_title(project_id, session_id, user_id=user_id)
+        needs_title = not current_title or current_title == "新对话"
         self.memory.append(project_id, "user", message, session_id, user_id=user_id)
         memory_messages = [
             {"role": "system" if item["role"] == "summary" else item["role"], "content": item["content"]}
@@ -425,6 +482,14 @@ class AgentRuntime:
         except Exception as exc:
             self.memory.last_error = _safe_runtime_error(exc, self.config.api_key)
         memory_warning = _safe_runtime_error(RuntimeError(self.memory.last_error), self.config.api_key) if self.memory.last_error else None
+        session_title = current_title or "新对话"
+        if needs_title:
+            generated_title = self._generate_session_title(message, answer)
+            session_title = generated_title
+            try:
+                session_title = self.memory.set_session_title(project_id, session_id, generated_title, user_id=user_id)
+            except Exception:
+                session_title = generated_title
         return {
             "answer": answer,
             "source": source,
@@ -435,5 +500,7 @@ class AgentRuntime:
             "citations": self._extract_citations(facts),
             "facts": facts,
             "memory": self.memory.recent(project_id, session_id, user_id=user_id),
+            "session_id": session_id,
+            "session_title": session_title,
         }
 

@@ -23,6 +23,7 @@ export interface CurrentUser {
   email: string;
   skills?: string[];
   status?: string;
+  avatar_url?: string | null;
 }
 
 export interface ProjectSummary {
@@ -47,6 +48,7 @@ export interface ProjectMember {
   skills?: string[];
   max_concurrent_tasks: number;
   status?: string;
+  avatar_url?: string | null;
 }
 
 export interface ProjectTask {
@@ -56,6 +58,7 @@ export interface ProjectTask {
   description?: string | null;
   assignee_id?: number | null;
   assignee_name?: string | null;
+  assignee_avatar_url?: string | null;
   reviewer_id?: number | null;
   reviewer_name?: string | null;
   status: TaskStatus;

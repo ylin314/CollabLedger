@@ -265,7 +265,7 @@ function ProfileModal({ user, onClose, isSelf = false, onUserUpdated = null }) {
               </ul>
               <p className="profile-note">
                 来源项目 {profile.source_projects?.length || 0} 个；任务 {sourceCounts.assigned_tasks || 0} 条；
-                confirmed 贡献 {sourceCounts.confirmed_contributions || 0} 条。生成于 {profile.generated_at || profile.updated_at}。
+                confirmed 贡献 {sourceCounts.confirmed_contributions || 0} 条。
               </p>
             </section>
 

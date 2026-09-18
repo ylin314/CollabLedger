@@ -1,13 +1,12 @@
 import {
   ArrowRight,
-  CalendarDays,
   BellRing,
   Plus,
   TrendingUp,
   Users,
 } from "lucide-react";
 import { useState } from "react";
-import { formatDate, greetingStamp, greetingTitle } from "../../shared/core";
+import { greetingTitle } from "../../shared/core";
 import {
   MemberCard,
   Metric,
@@ -68,7 +67,6 @@ function Overview({
   return (
     <>
       <PageTitle
-        eyebrow={greetingStamp()}
         title={greetingTitle(auth?.name)}
         action={
           canWrite ? (
@@ -97,10 +95,6 @@ function Overview({
             <h2>{project.name}</h2>
             <p>{project.description || "让每一份协作成果都被看见。"}</p>
             <div className="hero-meta">
-              <span>
-                <CalendarDays aria-hidden="true" /> {formatDate(project.start_date)} —{" "}
-                {formatDate(project.end_date)}
-              </span>
               <span><Users aria-hidden="true" /> {memberStats.length} 位成员</span>
             </div>
           </div>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { formatApiError, getJson, sendJson } from "../../api/client";
-import { absoluteInviteUrl, copyText, initials } from "../../shared/core";
+import { absoluteInviteUrl, copyText } from "../../shared/core";
+import { MemberAvatar } from "../../shared/components";
 
 function MembersModal({ project, currentUser, onClose, onUpdated, onToast }) {
   const [members, setMembers] = useState(project.members || []);
@@ -105,7 +106,7 @@ function MembersModal({ project, currentUser, onClose, onUpdated, onToast }) {
             const memberId = m.user_id || m.id;
             return (
               <div className="member-manage-row" key={memberId}>
-                <div className="avatar avatar-0">{initials(m.name)}</div>
+                <MemberAvatar src={m.avatar_url} name={m.name} />
                 <div className="member-manage-info">
                   <strong title={m.name}>{m.name}</strong>
                   <span

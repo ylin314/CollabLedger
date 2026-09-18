@@ -142,9 +142,8 @@ function TasksView({
               onChange={(event) => setSort(event.target.value)}
               aria-label="任务排序"
             >
-              <option value="due_date">截止日期</option>
               <option value="priority">优先级</option>
-              <option value="created_at">创建时间</option>
+              <option value="due_date">截止先后</option>
             </select>
           </label>
         </div>
@@ -290,7 +289,7 @@ function TaskDetailModal({
               </span>
               <span>负责人：{item.assignee_name || "未分配"}</span>
               <span>评审人：{item.reviewer_name || "未指定"}</span>
-              <span>截止：{item.due_date || "未设置"}</span>
+
               <span>
                 工时：{item.actual_hours || 0} / {item.estimated_hours || 0}h
               </span>
@@ -308,8 +307,7 @@ function TaskDetailModal({
                         {statusMeta[log.to_status]?.label || log.action}
                       </strong>
                       <span>
-                        {log.user_name || "系统"} ·{" "}
-                        {log.at?.slice(0, 16).replace("T", " ")}
+                        {log.user_name || "系统"}
                       </span>
                       {log.note && <p>{log.note}</p>}
                     </div>
@@ -325,8 +323,7 @@ function TaskDetailModal({
                     <div className="timeline-row" key={checkin.id}>
                       <strong>{checkin.user_name}</strong>
                       <span>
-                        {checkin.hours || 0}h ·{" "}
-                        {checkin.created_at?.slice(0, 16).replace("T", " ")}
+                        {checkin.hours || 0}h
                       </span>
                       <p>{checkin.content}</p>
                       {checkin.blockers && <em>阻塞：{checkin.blockers}</em>}
@@ -359,8 +356,7 @@ function TaskDetailModal({
                     <div className="timeline-row" key={row.id}>
                       <strong>{Number(row.quality).toFixed(1)} / 5</strong>
                       <span>
-                        {row.reviewer_name} ·{" "}
-                        {row.created_at?.slice(0, 16).replace("T", " ")}
+                        {row.reviewer_name}
                       </span>
                       <p>{row.comment || "未填写说明"}</p>
                     </div>
@@ -572,15 +568,7 @@ function TaskModal({
           </label>
         </div>
         <div className="form-row">
-          <label>
-            截止日期
-            <input
-              type="date"
-              value={form.due_date}
-              onChange={(e) => update("due_date", e.target.value)}
-            />
-          </label>
-          <label>
+                    <label>
             负责人（可稍后分配）
             <select
               value={form.assignee_id}

@@ -168,12 +168,12 @@ def internal_project_risks(project_id: int, summarize: bool = False) -> dict[str
 
 
 def internal_project_report(project_id: int) -> dict[str, Any]:
-    conn = db(); project = ensure_project(conn, project_id); stats = _project_stats(conn, project_id); members = conn.execute("SELECT u.id,u.name FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? AND m.status='active' ORDER BY u.id", (project_id,)).fetchall(); items = []
+    conn = db(); project = ensure_project(conn, project_id); stats = _project_stats(conn, project_id); members = conn.execute("SELECT u.id,u.name,u.avatar_url FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.project_id=? AND m.status='active' ORDER BY u.id", (project_id,)).fetchall(); items = []
     for member in members:
         task_stats = conn.execute("""SELECT COUNT(*) total,SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) completed,SUM(CASE WHEN status IN ('overdue','unfinished') THEN 1 ELSE 0 END) overdue,SUM(COALESCE(actual_hours,0)) hours FROM tasks WHERE project_id=? AND assignee_id=? AND deleted_at IS NULL""", (project_id, member["id"])).fetchone()
         quality = conn.execute("SELECT AVG(COALESCE(r.quality,t.quality)) q FROM tasks t LEFT JOIN task_reviews r ON r.task_id=t.id WHERE t.project_id=? AND t.assignee_id=? AND (r.quality IS NOT NULL OR t.quality IS NOT NULL)", (project_id, member["id"])).fetchone()["q"]
         contribs = conn.execute("SELECT kind,SUM(quantity) quantity FROM contributions WHERE project_id=? AND user_id=? AND status='confirmed' AND deleted_at IS NULL GROUP BY kind ORDER BY kind", (project_id, member["id"])).fetchall()
-        items.append({"user_id": member["id"], "name": member["name"], "tasks_total": task_stats["total"] or 0, "tasks_completed": task_stats["completed"] or 0, "tasks_overdue": task_stats["overdue"] or 0, "average_quality": round(quality, 2) if quality is not None else None, "actual_hours": round(task_stats["hours"] or 0, 2), "contributions": [dict(row) for row in contribs]})
+        items.append({"user_id": member["id"], "name": member["name"], "avatar_url": member["avatar_url"], "tasks_total": task_stats["total"] or 0, "tasks_completed": task_stats["completed"] or 0, "tasks_overdue": task_stats["overdue"] or 0, "average_quality": round(quality, 2) if quality is not None else None, "actual_hours": round(task_stats["hours"] or 0, 2), "contributions": [dict(row) for row in contribs]})
     conn.close(); return {"project_id": project_id, "project_name": project["name"], "generated_at": now_iso(), "overall": {"tasks_total": stats["task_count"], "tasks_completed": stats["completed_task_count"], "tasks_in_progress": stats["in_progress_task_count"], "tasks_overdue": stats["overdue_task_count"], "progress": stats["progress"]}, "members": items}
 
 
@@ -237,7 +237,7 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
         ).fetchall()
     ]
     member_rows = conn.execute(
-        "SELECT u.id,u.name FROM users u JOIN memberships m ON m.user_id=u.id "
+        "SELECT u.id,u.name,u.avatar_url FROM users u JOIN memberships m ON m.user_id=u.id "
         "WHERE m.project_id=? AND m.status='active' ORDER BY u.id",
         (project_id,),
     ).fetchall()
@@ -271,7 +271,7 @@ def internal_weekly_report(project_id: int, start: date, end: date) -> dict[str,
         effective_hours = checkin_hours if checkin_count else task_hours
         pending_count = (cs["pending_count"] or 0) + (cs["disputed_count"] or 0)
         members.append({
-            "user_id": member["id"], "name": member["name"],
+            "user_id": member["id"], "name": member["name"], "avatar_url": member["avatar_url"],
             "completed_tasks": ms["completed_tasks"] or 0, "active_tasks": ms["active_tasks"] or 0,
             "checkin_count": checkin_count, "checkin_hours": checkin_hours,
             "task_hours": task_hours, "actual_hours": effective_hours,
@@ -561,7 +561,7 @@ def internal_task_detail(project_id: int, task_id: int) -> dict[str, Any]:
     """单任务只读详情：标题/状态/负责人/截止/工时/打卡/评价，供 Agent 工具使用。"""
     conn = db(); ensure_project(conn, project_id)
     row = conn.execute(
-        "SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE t.id=? AND t.project_id=? AND t.deleted_at IS NULL",
+        "SELECT t.*,u.name assignee_name,u.avatar_url assignee_avatar_url FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE t.id=? AND t.project_id=? AND t.deleted_at IS NULL",
         (task_id, project_id),
     ).fetchone()
     if not row:
@@ -586,13 +586,13 @@ def internal_task_detail(project_id: int, task_id: int) -> dict[str, Any]:
 def internal_project_snapshot(project_id: int) -> dict[str, Any]:
     conn = db(); project = ensure_project(conn, project_id); detail = _project_detail(conn, project, None)
     members = list_members_internal(conn, project_id)
-    tasks = [as_task(row) for row in conn.execute("SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE t.project_id=? AND t.deleted_at IS NULL ORDER BY t.id", (project_id,)).fetchall()]
+    tasks = [as_task(row) for row in conn.execute("SELECT t.*,u.name assignee_name,u.avatar_url assignee_avatar_url FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE t.project_id=? AND t.deleted_at IS NULL ORDER BY t.id", (project_id,)).fetchall()]
     conn.close()
     return {"project": detail, "members": members, "tasks": tasks, "report": internal_project_report(project_id), "risks": internal_project_risks(project_id), "load": internal_member_load(project_id)}
 
 
 def list_members_internal(conn, project_id: int) -> list[dict[str, Any]]:
-    rows = conn.execute("SELECT m.user_id,u.name,m.role,u.skills,u.max_concurrent_tasks,u.status,m.joined_at FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.status='active' ORDER BY m.joined_at", (project_id,)).fetchall(); result = []
+    rows = conn.execute("SELECT m.user_id,u.name,m.role,u.skills,u.max_concurrent_tasks,u.status,u.avatar_url,m.joined_at FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.status='active' ORDER BY m.joined_at", (project_id,)).fetchall(); result = []
     for row in rows:
         item = dict(row); item["skills"] = json.loads(item["skills"] or "[]"); result.append(item)
     return result

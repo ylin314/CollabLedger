@@ -28,9 +28,6 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
     return (items || []).map((item) => ({
       role: item.role === "user" ? "user" : "agent",
       text: item.role === "summary" ? `会话摘要：${item.content}` : item.content,
-      meta: item.created_at
-        ? new Date(item.created_at).toLocaleString()
-        : "",
     }));
   }
 
@@ -84,10 +81,10 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
     setSessionId(next);
     localStorage.setItem(sessionStorageKey, next);
     setSessions((items) => [
-      { session_id: next, message_count: 0, updated_at: null, last_message: null },
+      { session_id: next, title: "新对话", message_count: 0, updated_at: null, last_message: null },
       ...items.filter((item) => item.session_id !== next),
     ]);
-    setMessages(welcome("已开始一个新的项目分析会话。发送第一条消息后，该会话会自动保存。"));
+    setMessages(welcome("已开始一个新对话。发送第一条消息后，会根据内容自动生成标题。"));
   }
 
   async function selectSession(next) {
@@ -98,13 +95,12 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
 
   function sessionTitle(item) {
     if (item?.title) return item.title;
-    if (item?.session_id && item.session_id !== "default") return item.session_id;
-    return "默认会话";
+    return "新对话";
   }
 
   async function renameSession() {
     const current = sessions.find((item) => item.session_id === sessionId);
-    const currentTitle = sessionTitle(current) || (sessionId === "default" ? "默认会话" : sessionId);
+    const currentTitle = sessionTitle(current);
     const title = window.prompt("请输入新的会话名称", currentTitle);
     if (title === null) return;
     const trimmed = title.trim();
@@ -146,15 +142,7 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
         method: "POST",
         body: JSON.stringify({ message: text, session_id: sessionId }),
       });
-      const generated = result.generated_at
-        ? new Date(result.generated_at).toLocaleString()
-        : "";
-      const meta = [
-        result.source === "fallback" ? "规则兜底" : "AI 生成",
-        generated,
-      ]
-        .filter(Boolean)
-        .join(" · ");
+      const meta = result.source === "fallback" ? "规则兜底" : "AI 生成";
       setMessages((items) => [
         ...items,
         {
@@ -169,6 +157,15 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
         },
       ]);
       localStorage.setItem(sessionStorageKey, sessionId);
+      if (result.session_title) {
+        setSessions((items) => {
+          const next = items.map((item) =>
+            item.session_id === sessionId ? { ...item, title: result.session_title } : item,
+          );
+          if (next.some((item) => item.session_id === sessionId)) return next;
+          return [{ session_id: sessionId, title: result.session_title, message_count: 1 }, ...next];
+        });
+      }
       await loadSessions();
     } catch (error) {
       setMessages((items) => [
@@ -288,16 +285,14 @@ function AgentView({ project, tasks = [], online, onRecommend, role }) {
                 selectSession(event.target.value);
               }}
             >
-              <option value="default">
-                {sessionTitle(sessions.find((item) => item.session_id === "default"))}
-              </option>
-              {sessions
-                .filter((item) => item.session_id !== "default")
-                .map((item) => (
-                  <option key={item.session_id} value={item.session_id}>
-                    {sessionTitle(item)}（{item.message_count}）
-                  </option>
-                ))}
+              {!sessions.some((item) => item.session_id === sessionId) && (
+                <option value={sessionId}>{sessionTitle({ title: "新对话", session_id: sessionId })}</option>
+              )}
+              {sessions.map((item) => (
+                <option key={item.session_id} value={item.session_id}>
+                  {sessionTitle(item)}
+                </option>
+              ))}
             </select>
             <div className="session-actions">
               <button onClick={newSession}>

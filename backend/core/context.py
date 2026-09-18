@@ -143,7 +143,7 @@ def pagination(page: int, page_size: int) -> tuple[int, int]:
 
 def as_task(row: sqlite3.Row | dict[str, Any], conn: Optional[sqlite3.Connection] = None) -> dict[str, Any]:
     out = dict(row)
-    result = {key: out.get(key) for key in ("id", "project_id", "title", "description", "assignee_id", "assignee_name", "status", "task_type", "priority", "due_date", "estimated_hours", "actual_hours", "quality", "reviewer_id", "reviewer_name", "created_by", "created_at", "updated_at")}
+    result = {key: out.get(key) for key in ("id", "project_id", "title", "description", "assignee_id", "assignee_name", "assignee_avatar_url", "status", "task_type", "priority", "due_date", "estimated_hours", "actual_hours", "quality", "reviewer_id", "reviewer_name", "created_by", "created_at", "updated_at")}
     result["participant_ids"] = task_participant_ids(conn, result["id"]) if conn is not None else []
     if conn is not None and result["participant_ids"]:
         placeholders = ",".join("?" for _ in result["participant_ids"])

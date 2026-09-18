@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { sendJson } from "../../api/client";
-import { formatDate } from "../../shared/core";
+
 import { Metric, PageTitle } from "../../shared/components";
 import { GitHubIntegration } from "./GitHubIntegration";
 
@@ -209,7 +209,7 @@ function ContributionItem({ c, i, isOwner, onDecide }) {
         <strong>{c.title || "未命名贡献"}</strong>
         <p>{c.description || "成员提交了一条项目产出记录"}</p>
         <span>
-          {c.user_name} · {formatDate(c.occurred_at || c.created_at)}
+          {c.user_name}
         </span>
         <div className="contribution-meta">
           <span className={`contribution-status ${c.status || "pending"}`}>

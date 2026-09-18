@@ -1143,15 +1143,33 @@ select:focus-visible {
 .board-grid {
   grid-template-columns: repeat(7, minmax(190px, 1fr));
   gap: 10px;
+  align-items: stretch;
+  min-height: min(68vh, 760px);
   scrollbar-color: var(--cobalt) #d9dfdb;
 }
 
 .board-column {
-  min-height: 430px;
+  display: flex;
+  flex-direction: column;
+  min-height: min(68vh, 760px);
+  height: min(68vh, 760px);
+  max-height: min(68vh, 760px);
   padding: 10px;
   background: #e8ede9;
   border: 1px solid var(--ink);
   border-radius: 2px;
+  overflow: hidden;
+}
+
+.column-cards {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding-right: 2px;
 }
 
 .board-column:nth-child(2n) {

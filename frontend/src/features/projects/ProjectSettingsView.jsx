@@ -125,27 +125,7 @@ function ProjectSettingsView({ project, onSaved, onReload, onDeleted, onToast })
               onChange={(event) => update("description", event.target.value)}
             />
           </label>
-          <div className="form-row">
-            <label>
-              开始日期
-              <input
-                type="date"
-                value={form.start_date}
-                disabled={archived}
-                onChange={(event) => update("start_date", event.target.value)}
-              />
-            </label>
-            <label>
-              结束日期
-              <input
-                type="date"
-                value={form.end_date}
-                disabled={archived}
-                onChange={(event) => update("end_date", event.target.value)}
-              />
-            </label>
-          </div>
-          {!archived && (
+                    {!archived && (
             <div className="modal-actions">
               <button className="primary-button" disabled={busy === "save"}>
                 <Save aria-hidden="true" />

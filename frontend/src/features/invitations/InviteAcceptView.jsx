@@ -62,10 +62,7 @@ function InviteAcceptView({ code, currentUser, onAccepted, onCancel }) {
                 <dt>当前账号</dt>
                 <dd>{currentUser.name}</dd>
               </div>
-              <div>
-                <dt>有效期至</dt>
-                <dd>{invite.expires_at?.slice(0, 16).replace("T", " ")}</dd>
-              </div>
+
             </dl>
             {!invite.valid && (
               <div className="form-error">邀请已过期、撤销或达到使用上限。</div>

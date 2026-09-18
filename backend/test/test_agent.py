@@ -230,14 +230,19 @@ def test_agent_conversation_isolated_by_user_and_weekly_tool_is_read_only(tmp_pa
 
 def test_agent_clarify_action_returns_question(tmp_path):
     runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="https://example.com", api_key="key", model="test"))
-    runtime.tools.run = lambda project_id, name, arguments=None: {
-        "project": {"name": "测试"},
-        "tasks": [],
-        "members": [],
-        "report": {"overall": {}},
-        "risks": {"risks": []},
-        "load": {"members": []},
-    }
+    def fake_run(project_id, name, arguments=None):
+        snapshot = {
+            "project": {"name": "测试"},
+            "tasks": [],
+            "members": [],
+            "report": {"overall": {"tasks_total": 0, "tasks_completed": 0, "tasks_in_progress": 0, "tasks_overdue": 0}},
+            "risks": {"count": 0, "risks": []},
+            "load": {"members": []},
+        }
+        if name == "risk_detail":
+            return snapshot["risks"]
+        return snapshot
+    runtime.tools.run = fake_run
     runtime.llm.complete = lambda messages, timeout=None, max_tokens=None, response_format=None: json.dumps(
         {"action": "clarify", "question": "你想查看哪一个任务？"}, ensure_ascii=False
     )
@@ -399,3 +404,30 @@ def test_agent_recommendation_fallback_uses_dedicated_tool(tmp_path):
     assert "成员甲" in result["answer"]
     assert result["tool_trace"][-1]["tool"] == "recommend"
     assert result["tool_trace"][-1]["phase"] == "fallback_rescue"
+
+
+def test_agent_new_session_gets_fallback_title_from_first_message(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "agent.db")
+    api.init_db()
+    user = api.create_user(api.UserIn(name="title-member", skills=["Python"]))
+    project = api.create_project(api.ProjectIn(name="title-project", owner_id=user["id"]))
+    runtime = AgentRuntime(tmp_path / "agent.db", AgentConfig(base_url="", api_key="", model="test"))
+    def fake_run(project_id, name, arguments=None):
+        snapshot = {
+            "project": {"name": "demo"},
+            "tasks": [],
+            "members": [],
+            "report": {"overall": {"tasks_total": 0, "tasks_completed": 0, "tasks_in_progress": 0, "tasks_overdue": 0}},
+            "risks": {"count": 0, "risks": []},
+            "load": {"members": []},
+        }
+        if name == "risk_detail":
+            return snapshot["risks"]
+        return snapshot
+    runtime.tools.run = fake_run
+    first = "project risk now"
+    result = runtime.run(project["id"], first, session_id="fresh")
+    assert result["session_title"] == first
+    assert runtime.memory.session_title(project["id"], "fresh") == first
+    again = runtime.run(project["id"], "check load again", session_id="fresh")
+    assert again["session_title"] == first

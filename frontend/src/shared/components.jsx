@@ -1,12 +1,19 @@
-import { CalendarDays, Clock3, Plus, GitBranch } from "lucide-react";
+import { Clock3, Plus, GitBranch } from "lucide-react";
+import defaultAvatar from "../assets/akarin.jpeg";
 import {
   avatarColors,
   dimLabel,
-  formatDate,
-  initials,
   sourceLabel,
   statusMeta,
 } from "./core";
+
+function MemberAvatar({ src, name, className = "avatar", alt }) {
+  return (
+    <div className={className}>
+      <img className="avatar-image" src={src || defaultAvatar} alt={alt || name || "成员头像"} />
+    </div>
+  );
+}
 
 function PageTitle({ eyebrow = "", title, action = null }) {
   const showEyebrow = /[\u3400-\u9fff]/.test(eyebrow || "");
@@ -53,12 +60,11 @@ function MemberCard({ member, index, onProfile }) {
   return (
     <div className="member-card">
       <div className="member-head">
-        <div
+        <MemberAvatar
           className={`avatar avatar-${index % avatarColors.length}`}
-          style={{ background: avatarColors[index % avatarColors.length] }}
-        >
-          {member.avatar_url ? <img className="avatar-image" src={member.avatar_url} alt="" /> : initials(member.name)}
-        </div>
+          src={member.avatar_url}
+          name={member.name}
+        />
         <div>
           <strong>{member.name}</strong>
           <span className={`status ${status[1]}`}>
@@ -125,12 +131,9 @@ function TaskRow({ task, onAction, onRecommend, canManageTask }) {
         <strong>{task.title}</strong>
         <div className="task-row-meta">
           <span className={`tag ${meta.tone}`}>{meta.label}</span>
-          <span>截止 {formatDate(task.due_date)}</span>
           {task.assignee_name ? (
             <span className="assignee-inline">
-              <span className="tiny-avatar">
-                {initials(task.assignee_name)}
-              </span>
+              <MemberAvatar className="tiny-avatar" src={task.assignee_avatar_url} name={task.assignee_name} />
               {task.assignee_name}
             </span>
           ) : onRecommend ? (
@@ -182,13 +185,12 @@ function TaskCard({ task, onAction, onRecommend, canManageTask, onOpen }) {
       </button>
       {task.description && <p>{task.description}</p>}
       <div className="task-card-info">
-        <span><CalendarDays aria-hidden="true" /> {formatDate(task.due_date)}</span>
         <span><Clock3 aria-hidden="true" /> {task.estimated_hours || "—"}h</span>
       </div>
       <div className="task-card-bottom">
         {task.assignee_name ? (
           <span className="assignee-inline">
-            <span className="tiny-avatar">{initials(task.assignee_name)}</span>
+            <MemberAvatar className="tiny-avatar" src={task.assignee_avatar_url} name={task.assignee_name} />
             {task.assignee_name}
           </span>
         ) : onRecommend ? (
@@ -236,7 +238,7 @@ function RecommendCard({ item, selected, onSelect, onAccept }) {
       className={`recommend-item ${selected ? "selected" : ""}`}
       onClick={() => onSelect(item.user_id)}
     >
-      <div className="avatar avatar-0">{initials(item.name)}</div>
+      <MemberAvatar src={item.avatar_url} name={item.name} />
       <div className="recommend-main">
         <div className="recommend-name">
           <strong>{item.name}</strong>
@@ -306,6 +308,7 @@ export {
   PageTitle,
   Metric,
   MemberCard,
+  MemberAvatar,
   TaskRow,
   TaskCard,
   SkillBar,

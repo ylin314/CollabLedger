@@ -27,7 +27,7 @@ import {
 } from "./api/client";
 import "./styles.css";
 import "./design-system.css";
-import { initials, nav, readRoute, routePath, statusMeta } from "./shared/core";
+import { nav, readRoute, routePath, statusMeta } from "./shared/core";
 import defaultAvatar from "./assets/akarin.jpeg";
 import { Overview } from "./features/overview/Overview";
 import {
@@ -488,7 +488,6 @@ function App() {
           <button className="side-tool" onClick={() => navigate("history")}>
             <History aria-hidden="true" /> 历史项目
           </button>
-          <button className="side-tool" onClick={() => navigate("classrooms")}><Users aria-hidden="true" /> 班级成员</button>
           {canWrite && (
             <button className="side-tool" onClick={() => navigate("worklog")}>
               <TimerReset aria-hidden="true" /> 今日打卡

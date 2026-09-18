@@ -157,6 +157,26 @@ def rename_agent_session(
     return {"project_id": project_id, "session_id": session_id, "title": title, "updated_at": stamp}
 
 
+@router.delete("/api/projects/{project_id}/agent/sessions", status_code=204)
+def clear_all_agent_sessions(project_id: int, request: Request) -> Response:
+    """清空当前用户在该项目下的全部 Agent 会话。"""
+    conn = db()
+    _, user, _ = ensure_project_access(conn, project_id, request, "member")
+    user_id = user["id"] if user else None
+    if _has_agent_memory(conn):
+        if user_id is None:
+            conn.execute("DELETE FROM agent_memory WHERE project_id=? AND user_id IS NULL", (project_id,))
+        else:
+            conn.execute("DELETE FROM agent_memory WHERE project_id=? AND user_id=?", (project_id, user_id))
+    if user_id is None:
+        conn.execute("DELETE FROM agent_sessions WHERE project_id=? AND user_id IS NULL", (project_id,))
+    else:
+        conn.execute("DELETE FROM agent_sessions WHERE project_id=? AND user_id=?", (project_id, user_id))
+    conn.commit()
+    conn.close()
+    return Response(status_code=204)
+
+
 @router.get("/api/projects/{project_id}/agent/sessions/{session_id}/messages")
 def agent_session_messages(project_id: int, session_id: str, request: Request) -> dict[str, Any]:
     """读取当前用户指定 Agent 会话历史，供前端切换会话时恢复消息。"""
@@ -210,4 +230,4 @@ def agent(project_id: int, payload: AgentIn, request: Request) -> dict[str, Any]
 def agent_chat(project_id: int, payload: AgentIn, request: Request) -> dict[str, Any]:
     return project_agent_chat(project_id, payload, request)
 
-__all__ = ['agent_config', 'project_agent_chat', 'agent_sessions', 'agent_session_messages', 'clear_agent_session', 'agent', 'agent_chat']
+__all__ = ['agent_config', 'project_agent_chat', 'agent_sessions', 'agent_session_messages', 'clear_agent_session', 'clear_all_agent_sessions', 'agent', 'agent_chat']

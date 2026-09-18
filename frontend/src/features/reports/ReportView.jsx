@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { Download, RefreshCw } from "lucide-react";
 import { getJson, sendJson } from "../../api/client";
-import { initials } from "../../shared/core";
-import { PageTitle } from "../../shared/components";
+import { PageTitle, MemberAvatar } from "../../shared/components";
 
 function ReportView({ project, report, memberStats, tasks, weekly, risks, diagnostics }) {
   const [weeklyData, setWeeklyData] = useState(weekly);
@@ -111,9 +110,7 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks, diagno
             <div>
               <h2>本周周报</h2>
               <p>
-                {currentWeekly?.period
-                  ? `${currentWeekly.period.start_date} 至 ${currentWeekly.period.end_date}`
-                  : "基于真实任务、打卡和贡献"}
+                {"基于真实任务、打卡和贡献"}
               </p>
             </div>
             <button
@@ -191,9 +188,7 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks, diagno
             <summary>历史周报（{history.length}）</summary>
             {history.map((item) => (
               <div className="weekly-history-row" key={item.id}>
-                <strong>
-                  {item.period_start} 至 {item.period_end}
-                </strong>
+                <strong>历史周报</strong>
                 <span>
                   完成 {item.tasks_completed || 0} 项 · 打卡{" "}
                   {item.checkin_count || 0} 次 · 风险 {item.risks_count || 0} 条
@@ -267,7 +262,7 @@ function ReportView({ project, report, memberStats, tasks, weekly, risks, diagno
             {rows.map((r) => (
               <div className="report-row" key={r.user_id}>
                 <span className="assignee-inline">
-                  <span className="tiny-avatar">{initials(r.name)}</span>
+                  <MemberAvatar className="tiny-avatar" src={r.avatar_url} name={r.name} />
                   <strong>{r.name}</strong>
                 </span>
                 <span>

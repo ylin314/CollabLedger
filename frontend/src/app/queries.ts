@@ -102,9 +102,14 @@ export function workspaceQuery(projectId: number) {
       const names = Object.fromEntries(
         members.map((member) => [member.user_id, member.name]),
       );
+      const avatars = Object.fromEntries(
+        members.map((member) => [member.user_id, member.avatar_url]),
+      );
       const tasks = (tasksPayload.items || []).map((task) => ({
         ...task,
         assignee_name: task.assignee_name || names[Number(task.assignee_id)] || null,
+        assignee_avatar_url:
+          task.assignee_avatar_url || avatars[Number(task.assignee_id)] || null,
       }));
 
       return {

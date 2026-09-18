@@ -478,9 +478,7 @@ function RecommendationsView({
                         : ""}
                     </span>
                   </div>
-                  <span>
-                    {item.created_at?.slice(0, 16)?.replace("T", " ")}
-                  </span>
+
                 </div>
               );
             })
